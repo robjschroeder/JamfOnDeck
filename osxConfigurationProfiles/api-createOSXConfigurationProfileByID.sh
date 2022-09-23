@@ -28,22 +28,22 @@ computerConfigURL=(
   $pubghURL/osxConfigurationProfiles/SoftwareUpdates-Ring2.xml
   # Apple Software Updates - Ring 3
   $pubghURL/osxConfigurationProfiles/SoftwareUpdates-Ring3.xml
-	# Security and Privacy - FileVault
-	$pubghURL/osxConfigurationProfiles/SecurityAndPrivacy-FileVault.xml
-	# Apple Software Updates
-	$pubghURL/osxConfigurationProfiles/AppleSoftwareUpdates.xml
-	# Apple Firewall
-	$pubghURL/osxConfigurationProfiles/SecurityFirewall.xml
-	# Security Login Window Disable Guest User
-	$pubghURL/osxConfigurationProfiles/SecurityLoginWindowDisableGuestUser.xml
-	# CIS Benchmarks - 4.1 Disable Bonjour Advertising Services
-	$pubghURL/osxConfigurationProfiles/CISBenchmarksDisableBonjourAdvertisingServices.xml
-	# CIS Benchmarks - 2.5.9 Enable Limit Ad Tracking
-	$pubghURL/osxConfigurationProfiles/CISBenchmarksEnableLimitAdTracking.xml
-	# CIS Benchmarks - 2.5.6 Ensure Limit Ad Tracking
-	$pubghURL/osxConfigurationProfiles/CISBenchmarksEnsureLimitAdTracking.xml
-	# Security Gatekeeper
-	$pubghURL/osxConfigurationProfiles/SecurityGatekeeper.xml
+  # Security and Privacy - FileVault
+  $pubghURL/osxConfigurationProfiles/SecurityAndPrivacy-FileVault.xml
+  # Apple Software Updates
+  $pubghURL/osxConfigurationProfiles/AppleSoftwareUpdates.xml
+  # Apple Firewall
+  $pubghURL/osxConfigurationProfiles/SecurityFirewall.xml
+  # Security Login Window Disable Guest User
+  $pubghURL/osxConfigurationProfiles/SecurityLoginWindowDisableGuestUser.xml
+  # CIS Benchmarks - 4.1 Disable Bonjour Advertising Services
+  $pubghURL/osxConfigurationProfiles/CISBenchmarksDisableBonjourAdvertisingServices.xml
+  # CIS Benchmarks - 2.5.9 Enable Limit Ad Tracking
+  $pubghURL/osxConfigurationProfiles/CISBenchmarksEnableLimitAdTracking.xml
+  # CIS Benchmarks - 2.5.6 Ensure Limit Ad Tracking
+  $pubghURL/osxConfigurationProfiles/CISBenchmarksEnsureLimitAdTracking.xml
+  # Security Gatekeeper
+  $pubghURL/osxConfigurationProfiles/SecurityGatekeeper.xml
 )
 
 #
