@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# This script will create new policies within Jamf using
-# an array of xml files from Github URLs
+# This script will create new osx configuration profiles 
+# within Jamf using an array of xml files from Github URLs
 #
 # Created 09.23.2022 @robjschroeder
 
