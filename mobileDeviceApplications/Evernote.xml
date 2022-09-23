@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<mobile_device_application>
+    <general>
+        <bundle_id>com.evernote.iPhone.Evernote</bundle_id>
+        <category>
+            <name>Productivity</name>
+        </category>
+        <make_available_after_install>true</make_available_after_install>
+        <itunes_country_region>US</itunes_country_region>
+        <itunes_sync_time>0</itunes_sync_time>
+        <deployment_type>Make Available in Self Service</deployment_type>
+        <deploy_automatically>false</deploy_automatically>
+        <deploy_as_managed_app>true</deploy_as_managed_app>
+        <remove_app_when_mdm_profile_is_removed>true</remove_app_when_mdm_profile_is_removed>
+        <prevent_backup_of_app_data>false</prevent_backup_of_app_data>
+        <allow_user_to_delete>true</allow_user_to_delete>
+        <require_network_tethered>false</require_network_tethered>
+        <keep_description_and_icon_up_to_date>false</keep_description_and_icon_up_to_date>
+        <keep_app_updated_on_devices>false</keep_app_updated_on_devices>
+        <free>true</free>
+        <take_over_management>true</take_over_management>
+        <host_externally>true</host_externally>
+    </general>
+    <scope>
+        <all_mobile_devices>true</all_mobile_devices>
+        <all_jss_users>false</all_jss_users>
+    </scope>
+    <self_service>
+        <self_service_categories>
+            <category>
+                <name>Productivity</name>
+                <display_in>true</display_in>
+            </category>
+        </self_service_categories>
+    </self_service>
+    <vpp>
+        <assign_vpp_device_based_licenses>true</assign_vpp_device_based_licenses>
+        <vpp_admin_account_id>1</vpp_admin_account_id>
+    </vpp>
+</mobile_device_application>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<script>
+    <name>Jamf Protect - Screenshot Remediation</name>
+    <category>Security</category>
+    <filename>Jamf Protect - Screenshot Remediation</filename>
+    <info></info>
+    <notes></notes>
+    <priority>After</priority>
+    <parameters></parameters>
+    <os_requirements></os_requirements>
+    <script_contents>#!/bin/bash
+
+jamf policy -event install-depNotify
+
+irplayBook=/usr/local/irplaybook
+mkdir -p $irplayBook
+chmod 755 $irplayBook
+
+
+/usr/bin/tee /usr/local/irplaybook/Script.sh&lt;&lt;"EOF"
+#!/bin/bash
+set -x
+PID=$$
+#Remove Jamf Protect Extension Attribute
+rm /Library/Application\ Support/JamfProtect/groups/protect-Screenshot
+if [ -f /var/tmp/depnotify.log ]; then
+rm /var/tmp/depnotify.log
+fi
+# DEP Notify for Jamf Protect
+if [ -f "/Applications/Utilities/DEPNotify.app/Contents/MacOS/DEPNotify" ]; then
+/Applications/Utilities/DEPNotify.app/Contents/MacOS/DEPNotify -fullScreen &amp;
+else
+echo "DEP Notify Not Present.. Exiting"
+exit 1;
+fi
+
+
+#Icon
+echo "Command: Image: /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/AlertStopIcon.icns" &gt;&gt; /var/tmp/depnotify.log
+
+
+#Title
+echo "Command: MainTitle: Jamf Protect Remediation" &gt;&gt; /var/tmp/depnotify.log
+#Main Text Body
+echo "Command: MainText: Jamf Protect has detected malicious activity on this computer.\n\nYou may resume using your Mac once the malicious incident has been isolated.\n\n If this screen remains for longer than five minutes, please call the IT Department using the number on the back of your ID badge." &gt;&gt; /var/tmp/depnotify.log
+#Status Message
+echo "Status: Remediation in progress..." &gt;&gt; /var/tmp/depnotify.log
+echo "Command: DeterminateManualStep" &gt;&gt; /var/tmp/depnotify.log
+sleep 4
+
+
+oldIFS=$IFS
+IFS=$'\n'
+
+
+screenshots+=($(mdfind kMDItemIsScreenCapture:1))
+#screenshots+=($(mdfind "kMDItemFSName == '*Screen Shot*'"))
+echo "Command: DeterminateManual: ${#screenshots[@]}" &gt;&gt; /var/tmp/depnotify.log
+
+
+for screenshot in ${screenshots[@]};do
+echo "Deleting $screenshot"
+echo "Status: Deleting $screenshot" &gt;&gt; /var/tmp/depnotify.log
+echo "Command: DeterminateManualStep: 1" &gt;&gt; /var/tmp/depnotify.log
+rm "$screenshot"
+sleep 2
+done
+IFS=$oldIFS
+echo "Status: " &gt;&gt; /var/tmp/depnotify.log
+echo "Command: DeterminateManualStep: 1" &gt;&gt; /var/tmp/depnotify.log
+#echo "Command: DeterminateManualStep" &gt;&gt; /var/tmp/depnotify.log
+# Optional sleeps...
+#Completed Title
+echo "Command: MainTitle: Remediation Complete" &gt;&gt; /var/tmp/depnotify.log
+#Completed Icon
+echo "Command: Image: /Library/Application Support/JamfProtect/JamfProtect.app/Contents/Resources/AppIcon.icns" &gt;&gt; /var/tmp/depnotify.log
+#Completed Text Body
+echo "Command: MainText: The malicious element was isolated. Thank you for your patience.\n\nAs a reminder, your security is of the utmost importance. If you receive any unusual emails or phone calls asking for your username, password, or any other requests, please call the IT Department using the number on the back of your ID badge." &gt;&gt; /var/tmp/depnotify.log
+#sleep 5
+#echo "Command: DeterminateManualStep" &gt;&gt; /var/tmp/depnotify.log
+#echo "Status: " &gt;&gt; /var/tmp/depnotify.log
+sleep 3
+#echo "Command: ContinueButton: Continue" &gt;&gt; /var/tmp/depnotify.log
+echo "Command: Quit: Remediation Complete" &gt;&gt; /var/tmp/depnotify.log
+#echo "Command: Quit" &gt;&gt; /var/tmp/depnotify.log
+rm /var/tmp/depnotify.log
+#Remove Jamf Protect Extension Attribute
+#rm /Library/Application\ Support/JamfProtect/groups/*
+#Remove DEPNotify.app
+pkill DEPNotify
+rm -R /Applications/Utilities/DEPNotify.app
+#kill $PID
+#Remove incident response artifacts
+rm /Library/LaunchDaemons/com.jamfsoftware.task.irplaybook.plist
+rm "$0"
+rm -rf /usr/local/irplaybook
+launchctl bootout system/com.jamfsoftware.task.irplaybook
+exit 0
+EOF
+
+
+chmod 755 "$irplayBook/Script.sh"
+
+
+/usr/local/irplaybook/Script.sh
+
+exit 0</script_contents>
+    <script_contents_encoded>IyEvYmluL2Jhc2gKCmphbWYgcG9saWN5IC1ldmVudCBpbnN0YWxsLWRlcE5vdGlmeQoKaXJwbGF5Qm9vaz0vdXNyL2xvY2FsL2lycGxheWJvb2sKbWtkaXIgLXAgJGlycGxheUJvb2sKY2htb2QgNzU1ICRpcnBsYXlCb29rCgoKL3Vzci9iaW4vdGVlIC91c3IvbG9jYWwvaXJwbGF5Ym9vay9TY3JpcHQuc2g8PCJFT0YiCiMhL2Jpbi9iYXNoCnNldCAteApQSUQ9JCQKI1JlbW92ZSBKYW1mIFByb3RlY3QgRXh0ZW5zaW9uIEF0dHJpYnV0ZQpybSAvTGlicmFyeS9BcHBsaWNhdGlvblwgU3VwcG9ydC9KYW1mUHJvdGVjdC9ncm91cHMvcHJvdGVjdC1TY3JlZW5zaG90CmlmIFsgLWYgL3Zhci90bXAvZGVwbm90aWZ5LmxvZyBdOyB0aGVuCnJtIC92YXIvdG1wL2RlcG5vdGlmeS5sb2cKZmkKIyBERVAgTm90aWZ5IGZvciBKYW1mIFByb3RlY3QKaWYgWyAtZiAiL0FwcGxpY2F0aW9ucy9VdGlsaXRpZXMvREVQTm90aWZ5LmFwcC9Db250ZW50cy9NYWNPUy9ERVBOb3RpZnkiIF07IHRoZW4KL0FwcGxpY2F0aW9ucy9VdGlsaXRpZXMvREVQTm90aWZ5LmFwcC9Db250ZW50cy9NYWNPUy9ERVBOb3RpZnkgLWZ1bGxTY3JlZW4gJgplbHNlCmVjaG8gIkRFUCBOb3RpZnkgTm90IFByZXNlbnQuLiBFeGl0aW5nIgpleGl0IDE7CmZpCgoKI0ljb24KZWNobyAiQ29tbWFuZDogSW1hZ2U6IC9TeXN0ZW0vTGlicmFyeS9Db3JlU2VydmljZXMvQ29yZVR5cGVzLmJ1bmRsZS9Db250ZW50cy9SZXNvdXJjZXMvQWxlcnRTdG9wSWNvbi5pY25zIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCgoKI1RpdGxlCmVjaG8gIkNvbW1hbmQ6IE1haW5UaXRsZTogSmFtZiBQcm90ZWN0IFJlbWVkaWF0aW9uIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCiNNYWluIFRleHQgQm9keQplY2hvICJDb21tYW5kOiBNYWluVGV4dDogSmFtZiBQcm90ZWN0IGhhcyBkZXRlY3RlZCBtYWxpY2lvdXMgYWN0aXZpdHkgb24gdGhpcyBjb21wdXRlci5cblxuWW91IG1heSByZXN1bWUgdXNpbmcgeW91ciBNYWMgb25jZSB0aGUgbWFsaWNpb3VzIGluY2lkZW50IGhhcyBiZWVuIGlzb2xhdGVkLlxuXG4gSWYgdGhpcyBzY3JlZW4gcmVtYWlucyBmb3IgbG9uZ2VyIHRoYW4gZml2ZSBtaW51dGVzLCBwbGVhc2UgY2FsbCB0aGUgSVQgRGVwYXJ0bWVudCB1c2luZyB0aGUgbnVtYmVyIG9uIHRoZSBiYWNrIG9mIHlvdXIgSUQgYmFkZ2UuIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCiNTdGF0dXMgTWVzc2FnZQplY2hvICJTdGF0dXM6IFJlbWVkaWF0aW9uIGluIHByb2dyZXNzLi4uIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCmVjaG8gIkNvbW1hbmQ6IERldGVybWluYXRlTWFudWFsU3RlcCIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwpzbGVlcCA0CgoKb2xkSUZTPSRJRlMKSUZTPSQnXG4nCgoKc2NyZWVuc2hvdHMrPSgkKG1kZmluZCBrTURJdGVtSXNTY3JlZW5DYXB0dXJlOjEpKQojc2NyZWVuc2hvdHMrPSgkKG1kZmluZCAia01ESXRlbUZTTmFtZSA9PSAnKlNjcmVlbiBTaG90KiciKSkKZWNobyAiQ29tbWFuZDogRGV0ZXJtaW5hdGVNYW51YWw6ICR7I3NjcmVlbnNob3RzW0BdfSIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwoKCmZvciBzY3JlZW5zaG90IGluICR7c2NyZWVuc2hvdHNbQF19O2RvCmVjaG8gIkRlbGV0aW5nICRzY3JlZW5zaG90IgplY2hvICJTdGF0dXM6IERlbGV0aW5nICRzY3JlZW5zaG90IiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCmVjaG8gIkNvbW1hbmQ6IERldGVybWluYXRlTWFudWFsU3RlcDogMSIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwpybSAiJHNjcmVlbnNob3QiCnNsZWVwIDIKZG9uZQpJRlM9JG9sZElGUwplY2hvICJTdGF0dXM6ICIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwplY2hvICJDb21tYW5kOiBEZXRlcm1pbmF0ZU1hbnVhbFN0ZXA6IDEiID4+IC92YXIvdG1wL2RlcG5vdGlmeS5sb2cKI2VjaG8gIkNvbW1hbmQ6IERldGVybWluYXRlTWFudWFsU3RlcCIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwojIE9wdGlvbmFsIHNsZWVwcy4uLgojQ29tcGxldGVkIFRpdGxlCmVjaG8gIkNvbW1hbmQ6IE1haW5UaXRsZTogUmVtZWRpYXRpb24gQ29tcGxldGUiID4+IC92YXIvdG1wL2RlcG5vdGlmeS5sb2cKI0NvbXBsZXRlZCBJY29uCmVjaG8gIkNvbW1hbmQ6IEltYWdlOiAvTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0L0phbWZQcm90ZWN0L0phbWZQcm90ZWN0LmFwcC9Db250ZW50cy9SZXNvdXJjZXMvQXBwSWNvbi5pY25zIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCiNDb21wbGV0ZWQgVGV4dCBCb2R5CmVjaG8gIkNvbW1hbmQ6IE1haW5UZXh0OiBUaGUgbWFsaWNpb3VzIGVsZW1lbnQgd2FzIGlzb2xhdGVkLiBUaGFuayB5b3UgZm9yIHlvdXIgcGF0aWVuY2UuXG5cbkFzIGEgcmVtaW5kZXIsIHlvdXIgc2VjdXJpdHkgaXMgb2YgdGhlIHV0bW9zdCBpbXBvcnRhbmNlLiBJZiB5b3UgcmVjZWl2ZSBhbnkgdW51c3VhbCBlbWFpbHMgb3IgcGhvbmUgY2FsbHMgYXNraW5nIGZvciB5b3VyIHVzZXJuYW1lLCBwYXNzd29yZCwgb3IgYW55IG90aGVyIHJlcXVlc3RzLCBwbGVhc2UgY2FsbCB0aGUgSVQgRGVwYXJ0bWVudCB1c2luZyB0aGUgbnVtYmVyIG9uIHRoZSBiYWNrIG9mIHlvdXIgSUQgYmFkZ2UuIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCiNzbGVlcCA1CiNlY2hvICJDb21tYW5kOiBEZXRlcm1pbmF0ZU1hbnVhbFN0ZXAiID4+IC92YXIvdG1wL2RlcG5vdGlmeS5sb2cKI2VjaG8gIlN0YXR1czogIiA+PiAvdmFyL3RtcC9kZXBub3RpZnkubG9nCnNsZWVwIDMKI2VjaG8gIkNvbW1hbmQ6IENvbnRpbnVlQnV0dG9uOiBDb250aW51ZSIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwplY2hvICJDb21tYW5kOiBRdWl0OiBSZW1lZGlhdGlvbiBDb21wbGV0ZSIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwojZWNobyAiQ29tbWFuZDogUXVpdCIgPj4gL3Zhci90bXAvZGVwbm90aWZ5LmxvZwpybSAvdmFyL3RtcC9kZXBub3RpZnkubG9nCiNSZW1vdmUgSmFtZiBQcm90ZWN0IEV4dGVuc2lvbiBBdHRyaWJ1dGUKI3JtIC9MaWJyYXJ5L0FwcGxpY2F0aW9uXCBTdXBwb3J0L0phbWZQcm90ZWN0L2dyb3Vwcy8qCiNSZW1vdmUgREVQTm90aWZ5LmFwcApwa2lsbCBERVBOb3RpZnkKcm0gLVIgL0FwcGxpY2F0aW9ucy9VdGlsaXRpZXMvREVQTm90aWZ5LmFwcAoja2lsbCAkUElECiNSZW1vdmUgaW5jaWRlbnQgcmVzcG9uc2UgYXJ0aWZhY3RzCnJtIC9MaWJyYXJ5L0xhdW5jaERhZW1vbnMvY29tLmphbWZzb2Z0d2FyZS50YXNrLmlycGxheWJvb2sucGxpc3QKcm0gIiQwIgpybSAtcmYgL3Vzci9sb2NhbC9pcnBsYXlib29rCmxhdW5jaGN0bCBib290b3V0IHN5c3RlbS9jb20uamFtZnNvZnR3YXJlLnRhc2suaXJwbGF5Ym9vawpleGl0IDAKRU9GCgoKY2htb2QgNzU1ICIkaXJwbGF5Qm9vay9TY3JpcHQuc2giCgoKL3Vzci9sb2NhbC9pcnBsYXlib29rL1NjcmlwdC5zaAoKZXhpdCAw</script_contents_encoded>
+</script>

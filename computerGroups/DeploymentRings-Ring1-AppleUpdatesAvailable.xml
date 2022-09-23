@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_group>
+    <name>Deployment Rings - Ring 1 - Apple Updates Available</name>
+    <is_smart>true</is_smart>
+    <site>
+        <id>-1</id>
+        <name>None</name>
+    </site>
+    <criteria>
+        <size>2</size>
+        <criterion>
+            <name>Number of Available Updates</name>
+            <priority>0</priority>
+            <and_or>and</and_or>
+            <search_type>more than</search_type>
+            <value>0</value>
+            <opening_paren>false</opening_paren>
+            <closing_paren>false</closing_paren>
+        </criterion>
+        <criterion>
+            <name>Computer Group</name>
+            <priority>1</priority>
+            <and_or>and</and_or>
+            <search_type>member of</search_type>
+            <value>Deployment Rings - Ring 1</value>
+            <opening_paren>false</opening_paren>
+            <closing_paren>false</closing_paren>
+        </criterion>
+    </criteria>
+</computer_group>

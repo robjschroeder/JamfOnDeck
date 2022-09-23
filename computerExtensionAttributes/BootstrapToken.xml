@@ -1,0 +1,26 @@
+<computer_extension_attribute>
+    <name>Bootstrap</name>
+    <description>Reports if the bootstrap token is escrowed to the Jamf Pro Server. </description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+bootstrap=$(profiles status -type bootstraptoken)
+
+if [[ $bootstrap == *"escrowed to server: YES"* ]]; then
+	echo "YES, Bootstrap escrowed"
+ 	result="YES"
+
+else
+	echo "NO, Bootstrap not escrowed"
+	result="NO"
+
+fi
+
+echo "&lt;result&gt;$result&lt;/result&gt;"</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

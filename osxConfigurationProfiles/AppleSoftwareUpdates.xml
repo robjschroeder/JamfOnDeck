@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<os_x_configuration_profile>
+    <general>
+        <name>Apple Software Updates</name>
+        <description>Configuration profile used for setting software update policies.</description>
+        <site>
+            <id>-1</id>
+            <name>None</name>
+        </site>
+        <category>
+            <name>Software Updates</name>
+        </category>
+        <distribution_method>Install Automatically</distribution_method>
+        <user_removable>false</user_removable>
+        <level>System</level>
+        <uuid>51ad5c81-3d03-4829-8247-81cff6c527ab</uuid>
+        <redeploy_on_update>Newly Assigned</redeploy_on_update>
+        <payloads>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1"&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;51ad5c81-3d03-4829-8247-81cff6c527ab&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;Configuration&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Zero Corp&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;51ad5c81-3d03-4829-8247-81cff6c527ab&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Apple Software Updates&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string&gt;Configuration profile used for setting software update policies.&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadRemovalDisallowed&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadScope&lt;/key&gt;&lt;string&gt;System&lt;/string&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;AB09B685-346E-457F-9068-B40ED7819E97&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.SoftwareUpdate&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Jamf&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;AB09B685-346E-457F-9068-B40ED7819E97&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Software Update&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string/&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;CatalogURL&lt;/key&gt;&lt;string/&gt;&lt;key&gt;AllowPreReleaseInstallation&lt;/key&gt;&lt;false/&gt;&lt;key&gt;AutomaticallyInstallAppUpdates&lt;/key&gt;&lt;true/&gt;&lt;key&gt;AutomaticallyInstallMacOSUpdates&lt;/key&gt;&lt;true/&gt;&lt;key&gt;AutomaticCheckEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;AutomaticDownload&lt;/key&gt;&lt;true/&gt;&lt;key&gt;ConfigDataInstall&lt;/key&gt;&lt;true/&gt;&lt;key&gt;CriticalUpdateInstall&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;</payloads>
+    </general>
+    <scope>
+        <all_computers>true</all_computers>
+        <all_jss_users>false</all_jss_users>
+        <computers></computers>
+        <buildings></buildings>
+        <departments></departments>
+        <computer_groups></computer_groups>
+        <jss_users></jss_users>
+        <jss_user_groups></jss_user_groups>
+        <limitations>
+            <users></users>
+            <user_groups></user_groups>
+            <network_segments></network_segments>
+            <ibeacons></ibeacons>
+        </limitations>
+        <exclusions>
+            <computers></computers>
+            <buildings></buildings>
+            <departments></departments>
+            <computer_groups></computer_groups>
+            <users></users>
+            <user_groups></user_groups>
+            <network_segments></network_segments>
+            <ibeacons></ibeacons>
+            <jss_users></jss_users>
+            <jss_user_groups></jss_user_groups>
+        </exclusions>
+    </scope>
+    <self_service>
+        <self_service_display_name>Apple Software Updates</self_service_display_name>
+        <install_button_text>Install</install_button_text>
+        <self_service_description></self_service_description>
+        <force_users_to_view_description>false</force_users_to_view_description>
+        <security>
+            <removal_disallowed>Never</removal_disallowed>
+        </security>
+        <self_service_icon></self_service_icon>
+        <feature_on_main_page>false</feature_on_main_page>
+        <self_service_categories>
+            <category>
+                <name>Software Updates</name>
+                <display_in>true</display_in>
+                <feature_in>false</feature_in>
+            </category>
+        </self_service_categories>
+        <notification>false</notification>
+        <notification>Self Service</notification>
+        <notification_subject></notification_subject>
+        <notification_message></notification_message>
+    </self_service>
+</os_x_configuration_profile>

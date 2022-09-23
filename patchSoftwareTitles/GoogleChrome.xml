@@ -1,0 +1,12 @@
+<patch_software_title>
+    <name>Google Chrome</name>
+    <name_id>0BC</name_id>
+    <source_id>1</source_id>
+    <notifications>
+        <web_notification>true</web_notification>
+        <email_notification>true</email_notification>
+    </notifications>
+    <categories>
+        <id>1</id>
+    </categories>
+</patch_software_title>

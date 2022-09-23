@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>Jamf Protect - Smart Groups</name>
+    <enabled>true</enabled>
+    <description>List containing all smart groups scoped by Jamf Protect</description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+SMARTGROUPS_DIR=/Library/Application\ Support/JamfProtect/groups
+if [ -d "$SMARTGROUPS_DIR" ]; then
+	SMART_GROUPS=`/bin/ls "$SMARTGROUPS_DIR" | tr '\n' ','`
+	echo "&lt;result&gt;${SMART_GROUPS%?}&lt;/result&gt;"
+else
+	echo "&lt;result&gt;&lt;/result&gt;"
+fi
+
+exit 0</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

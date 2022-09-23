@@ -1,0 +1,1211 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<script>
+    <name>Maintenance - Environment Test</name>
+    <category>Utilities</category>
+    <filename>Maintenance - Environment Test</filename>
+    <info>Tool will evaluate the user's environment and the ability to reach management endpoints. Report will be uploaded to the computer's inventory record. </info>
+    <notes></notes>
+    <priority>After</priority>
+    <parameters>
+        <parameter4>apiUsername</parameter4>
+        <parameter5>apiPassword</parameter5>
+    </parameters>
+    <os_requirements></os_requirements>
+    <script_contents>#!/bin/bash
+
+# Create a JET report and upload to the computer's inventory record in Jamf Pro
+
+# API Credentials:
+apiUsername="$4"
+apiPassword="$5"
+apiURL=$(defaults read /Library/Preferences/com.jamfsoftware.jamf.plist jss_url | sed s'/.$//')
+
+rm -rf /Users/Shared/Mac*
+
+# Creating a script to combine JET and MEU
+#
+# Created 09.12.2022 @robjschroeder
+
+##################################################
+# Using the JET as a template
+
+##################################################
+
+# Get Computer Information
+computerName=$(/usr/sbin/scutil --get ComputerName | /usr/bin/sed 's/’//')
+computerModel=$(/usr/sbin/sysctl -n hw.model)
+computerSerial=$(/usr/sbin/system_profiler SPHardwareDataType | awk '/Serial/ {print $NF}')
+macOSVersion=$(/usr/bin/sw_vers -productVersion)
+macOSBuild=$(echo $(/usr/bin/awk '/SOFTWARE LICENSE AGREEMENT FOR macOS/' '/System/Library/CoreServices/Setup Assistant.app/Contents/Resources/en.lproj/OSXSoftwareLicense.rtf' | /usr/bin/awk -F 'macOS ' '{print $NF}' | /usr/bin/tr -d '\\') build $(/usr/bin/sw_vers -buildVersion))
+# MacBook Pro computers with TouchBar (2016 and 2017) that contain Apple T1 chip
+# Intel-based Mac computers that contain the Apple T2 Chip
+# All Silicon Macs
+if [[ $(/usr/bin/arch) == 'arm64' ]]; then
+	secureEnclave="True"
+elif [[ $(/usr/sbin/system_profiler SPiBridgeDataType | awk '/Model Name:/') =~ "T2"  ]]; then
+	secureEnclave="True"
+elif [[ $(/usr/sbin/system_profiler SPHardwareDataType | awk '/Model Identifier/{print $3}') =~ ^(MacBookPro13,2|MacBookPro13,3|MacBookPro14,2|MacBookPro14,3)$ ]];then
+	secureEnclave="True"
+else
+	secureEnclave="False"
+fi
+
+# Network Information
+activeInterface=$(/sbin/route get google.com | /usr/bin/grep interface | /usr/bin/awk '{print $2}')
+activeService=$(/usr/sbin/networksetup -listnetworkserviceorder | /usr/bin/grep $activeInterface | /usr/bin/awk '{print $3}' | /usr/bin/sed 's/.$//')
+SSID=$(/usr/sbin/networksetup -getairportnetwork $activeInterface | /usr/bin/cut -c 24-)
+#dnsServers=($(/usr/sbin/networksetup -getdnsservers $activeService))
+#searchDomains=$(/usr/sbin/networksetup -getsearchdomains $activeService)
+macOSDefaultHostsFile=$(cat &lt;&lt;EOF
+##
+# Host Database
+#
+# localhost is used to configure the loopback interface
+# when the system is booting.  Do not change this entry.
+##
+127.0.0.1       localhost
+255.255.255.255 broadcasthost
+::1             localhost
+EOF
+)
+macOSHostFile=$(cat /etc/hosts)
+if [[ $(echo ${macOSDefaultHostsFile}) == $(echo ${macOSHostFile}) ]]; then
+	hostFileModified="False"
+else
+	hostFileModified="True"
+fi
+localIP=$(ipconfig getifaddr $activeInterface)
+#if [[ $(/usr/sbin/scutil --proxy | grep "HTTPEnable" | awk '{print $NF}') == "0" ]]; then
+#	proxyEnabled="False"
+#else
+#	proxyEnabled="True"
+#fi
+publicIP=$(/usr/bin/curl -s ifconfig.me | /usr/bin/sed 's/.$//')
+publicDNS=$(/usr/bin/nslookup $publicIP | /usr/bin/awk '/name =/' | /usr/bin/awk '{print $NF}' | /usr/bin/sed 's/.$//')
+
+APPLE_URL_ARRAY=(
+	#Device setup
+	"albert.apple.com,443,TCP,Device Setup Hosts"
+	"captive.apple.com,80,TCP"
+	"captive.apple.com,443,TCP"
+	"gs.apple.com,443,TCP"
+	"humb.apple.com,443,TCP"
+	"static.ips.apple.com,80,TCP"
+	"static.ips.apple.com,443,TCP"
+	"sq-device.apple.com,443,TCP"
+	"tbsc.apple.com,443,TCP"
+	"time-ios.apple.com,123,UDP"
+	"time.apple.com,123,UDP"
+	"time-macos.apple.com,123,UDP"
+
+	#Device Apple Push Notifications
+	"1-courier.push.apple.com,5223,TCP - non-proxied,Device Push Notification Hosts"
+	"1-courier.push.apple.com,443,TCP - non-proxied"
+	"2-courier.push.apple.com,5223,TCP - non-proxied"
+	"2-courier.push.apple.com,443,TCP - non-proxied"
+	"3-courier.push.apple.com,5223,TCP - non-proxied"
+	"3-courier.push.apple.com,443,TCP - non-proxied"
+	"4-courier.push.apple.com,5223,TCP - non-proxied"
+	"4-courier.push.apple.com,443,TCP - non-proxied"
+	"5-courier.push.apple.com,5223,TCP - non-proxied"
+	"5-courier.push.apple.com,443,TCP - non-proxied"
+	"6-courier.push.apple.com,5223,TCP - non-proxied"
+	"6-courier.push.apple.com,443,TCP - non-proxied"
+	"7-courier.push.apple.com,5223,TCP - non-proxied"
+	"7-courier.push.apple.com,443,TCP - non-proxied"
+	"8-courier.push.apple.com,5223,TCP - non-proxied"
+	"8-courier.push.apple.com,443,TCP - non-proxied"
+	"9-courier.push.apple.com,5223,TCP - non-proxied"
+	"9-courier.push.apple.com,443,TCP - non-proxied"
+	"10-courier.push.apple.com,5223,TCP - non-proxied"
+	"10-courier.push.apple.com,443,TCP - non-proxied"
+	"11-courier.push.apple.com,5223,TCP - non-proxied"
+	"11-courier.push.apple.com,443,TCP - non-proxied"
+	"12-courier.push.apple.com,5223,TCP - non-proxied"
+	"12-courier.push.apple.com,443,TCP - non-proxied"
+	"13-courier.push.apple.com,5223,TCP - non-proxied"
+	"13-courier.push.apple.com,443,TCP - non-proxied"
+	"14-courier.push.apple.com,5223,TCP - non-proxied"
+	"14-courier.push.apple.com,443,TCP - non-proxied"
+	"15-courier.push.apple.com,5223,TCP - non-proxied"
+	"15-courier.push.apple.com,443,TCP - non-proxied"
+	"16-courier.push.apple.com,5223,TCP - non-proxied"
+	"16-courier.push.apple.com,443,TCP - non-proxied"
+	"17-courier.push.apple.com,5223,TCP - non-proxied"
+	"17-courier.push.apple.com,443,TCP - non-proxied"
+	"18-courier.push.apple.com,5223,TCP - non-proxied"
+	"18-courier.push.apple.com,443,TCP - non-proxied"
+	"19-courier.push.apple.com,5223,TCP - non-proxied"
+	"19-courier.push.apple.com,443,TCP - non-proxied"
+	"20-courier.push.apple.com,5223,TCP - non-proxied"
+	"20-courier.push.apple.com,443,TCP - non-proxied"
+	"21-courier.push.apple.com,5223,TCP - non-proxied"
+	"21-courier.push.apple.com,443,TCP - non-proxied"	
+	"22-courier.push.apple.com,5223,TCP - non-proxied"
+	"22-courier.push.apple.com,443,TCP - non-proxied"
+	"23-courier.push.apple.com,5223,TCP - non-proxied"
+	"23-courier.push.apple.com,443,TCP - non-proxied"
+	"24-courier.push.apple.com,5223,TCP - non-proxied"
+	"24-courier.push.apple.com,443,TCP - non-proxied"
+	"25-courier.push.apple.com,5223,TCP - non-proxied"
+	"25-courier.push.apple.com,443,TCP - non-proxied"
+	"26-courier.push.apple.com,5223,TCP - non-proxied"
+	"26-courier.push.apple.com,443,TCP - non-proxied"
+	"27-courier.push.apple.com,5223,TCP - non-proxied"
+	"27-courier.push.apple.com,443,TCP - non-proxied"
+	"28-courier.push.apple.com,5223,TCP - non-proxied"
+	"28-courier.push.apple.com,443,TCP - non-proxied"
+	"29-courier.push.apple.com,5223,TCP - non-proxied"
+	"29-courier.push.apple.com,443,TCP - non-proxied"
+	"30-courier.push.apple.com,5223,TCP - non-proxied"
+	"30-courier.push.apple.com,443,TCP - non-proxied"
+	"31-courier.push.apple.com,5223,TCP - non-proxied"
+	"31-courier.push.apple.com,443,TCP - non-proxied"
+	"32-courier.push.apple.com,5223,TCP - non-proxied"
+	"32-courier.push.apple.com,443,TCP - non-proxied"
+	"33-courier.push.apple.com,5223,TCP - non-proxied"
+	"33-courier.push.apple.com,443,TCP - non-proxied"
+	"34-courier.push.apple.com,5223,TCP - non-proxied"
+	"34-courier.push.apple.com,443,TCP - non-proxied"
+	"35-courier.push.apple.com,5223,TCP - non-proxied"
+	"35-courier.push.apple.com,443,TCP - non-proxied"
+	"36-courier.push.apple.com,5223,TCP - non-proxied"
+	"36-courier.push.apple.com,443,TCP - non-proxied"
+	"37-courier.push.apple.com,5223,TCP - non-proxied"
+	"37-courier.push.apple.com,443,TCP - non-proxied"
+	"38-courier.push.apple.com,5223,TCP - non-proxied"
+	"38-courier.push.apple.com,443,TCP - non-proxied"
+	"39-courier.push.apple.com,5223,TCP - non-proxied"
+	"39-courier.push.apple.com,443,TCP - non-proxied"
+	"40-courier.push.apple.com,5223,TCP - non-proxied"
+	"40-courier.push.apple.com,443,TCP - non-proxied"
+	"41-courier.push.apple.com,5223,TCP - non-proxied"
+	"41-courier.push.apple.com,443,TCP - non-proxied"
+	"42-courier.push.apple.com,5223,TCP - non-proxied"
+	"42-courier.push.apple.com,443,TCP - non-proxied"
+	"43-courier.push.apple.com,5223,TCP - non-proxied"
+	"43-courier.push.apple.com,443,TCP - non-proxied"
+	"44-courier.push.apple.com,5223,TCP - non-proxied"
+	"44-courier.push.apple.com,443,TCP - non-proxied"
+	"45-courier.push.apple.com,5223,TCP - non-proxied"
+	"45-courier.push.apple.com,443,TCP - non-proxied"
+	"46-courier.push.apple.com,5223,TCP - non-proxied"
+	"46-courier.push.apple.com,443,TCP - non-proxied"
+	"47-courier.push.apple.com,5223,TCP - non-proxied"
+	"47-courier.push.apple.com,443,TCP - non-proxied"
+	"48-courier.push.apple.com,5223,TCP - non-proxied"
+	"48-courier.push.apple.com,443,TCP - non-proxied"
+	"49-courier.push.apple.com,5223,TCP - non-proxied"
+	"49-courier.push.apple.com,443,TCP - non-proxied"
+	"50-courier.push.apple.com,5223,TCP - non-proxied"
+	"50-courier.push.apple.com,443,TCP - non-proxied"
+
+
+
+	#On-Prem Jamf Pro Push Notification Hosts
+	"gateway.push.apple.com,2195,TCP - non-proxied,On-Prem Jamf Pro Apple Push - Binary Protocol"
+	"feedback.push.apple.com,2196,TCP - non-proxied"
+
+	#On-Prem Jamf Pro Push Notification Hosts - HTTP/2 Provider 
+	"api.push.apple.com,443,TCP,On-Prem Jamf Pro Apple Push  - HTTP/2 Provider"
+	"api.push.apple.com,2197,TCP"
+	
+	#Device Management
+	"deviceenrollment.apple.com,443,TCP,Device Management and Enrollment"
+	"deviceservices-external.apple.com,443,TCP"
+	"gdmf.apple.com,443,TCP"
+	"identity.apple.com,443,TCP"
+	"iprofiles.apple.com,443,TCP"
+	"mdmenrollment.apple.com,443,TCP"
+	"setup.icloud.com","443","TCP"
+	"vpp.itunes.apple.com,443,TCP"
+	
+	#Apple School Manager and Apple Business Manager
+	"school.apple.com,443,TCP,Apple School Manager and Apple Business Manager"
+	"school.apple.com,80,TCP"
+	"ws.school.apple.com,443,TCP"
+	"ws-ee-maidsvc.icloud.com,443,TCP"
+	"ws-ee-maidsvc.icloud.com,80,TCP"
+	"business.apple.com,443,TCP"
+	"business.apple.com,80,TCP"
+	"ws.business.apple.com,443,TCP"
+	#"isu.apple.com,443,TCP" Last checked November 2021 unreachable
+	#"isu.apple.com,80,TCP" Last checked November 2021 unreachable
+	
+	#Software updates
+	"appldnld.apple.com,80,TCP,Software Updates Hosts"
+	"configuration.apple.com,443,TCP"
+	"gg.apple.com,80,TCP"
+	"gg.apple.com,443,TCP"
+	"gnf-mdn.apple.com,443,TCP"
+	"gnf-mr.apple.com,443,TCP"
+	"gs.apple.com,80,TCP"
+	"gs.apple.com,443,TCP"
+	"ig.apple.com,443,TCP"
+	"mesu.apple.com,80,TCP"
+	"mesu.apple.com,443,TCP"
+	"ns.itunes.apple.com,443,TCP"
+	"oscdn.apple.com,80,TCP"
+	"oscdn.apple.com,443,TCP"
+	"osrecovery.apple.com,80,TCP"
+	"osrecovery.apple.com,443,TCP"
+	"skl.apple.com,443,TCP"
+	"swcdn.apple.com,80,TCP"
+	"swdist.apple.com,443,TCP"
+	"swdownload.apple.com,80,TCP"
+	"swdownload.apple.com,443,TCP"
+	#"swpost.apple.com,80,TCP" Last checked November 2021 unreachable
+	"swscan.apple.com,443,TCP"
+	"updates-http.cdn-apple.com,80,TCP"
+	"updates.cdn-apple.com,443,TCP"
+	"xp.apple.com,443,TCP"
+
+	#App Store
+	"itunes.apple.com,443,TCP,Apple App Store Hosts"
+	"itunes.apple.com,80,TCP"
+	"apps.apple.com,443,TCP"
+	"api.apps.apple.com,443,TCP"
+	"s.mzstatic.com,443,TCP"
+	"apps.mzstatic.com,443,TCP"
+	"ppq.apple.com,443,TCP"
+	"ns.itunes.apple.com,443,TCP"
+	"init.itunes.apple.com,443,TCP"
+	"affiliate.itunes.apple.com,443,TCP"
+	"analytics.itunes.apple.com,443,TCP"
+
+	#Carrier updates
+	"appldnld.apple.com.edgesuite.net,80,TCP,Carrier updates"
+	
+	#Content Caching
+	"lcdn-registration.apple.com,443,TCP,Content Caching"
+	"suconfig.apple.com,443,TCP"
+	"xp-cdn.apple.com,443,TCP"
+	"lcdn-locator.apple.com,443,TCP"
+	"serverstatus.apple.com,443,TCP"
+	
+	#Apple Developer
+	"register.appattest.apple.com,443,TCP,Apple Developer"
+	"data.appattest.apple.com,443,TCP"
+	"register-development.appattest.apple.com,443,TCP"
+	"data-development.appattest.apple.com,443,TCP"
+	
+	#Feedback Assistant
+	"bpapi.apple.com,443,TCP,Feedback Assistant"
+	"cssubmissions.apple.com,443,TCP"
+	"fba.apple.com,443,TCP"
+	
+	#Apple diagnostics
+	"diagassets.apple.com,443,TCP,Apple diagnostics"
+	
+	#DNS Resolution
+	#currently unable to be validated for certificates due to openssl on macOS not supporting TLS 1.3
+	#"doh.dns.apple.com,443,TCP,Domain Name System resolution"
+
+	#Certificate validation
+	"certs.apple.com,80,TCP,Certificate Validation Hosting"
+	"certs.apple.com,443,TCP"
+	"crl.apple.com,80,TCP"
+	"crl.entrust.net,80,TCP"
+	"crl3.digicert.com,80,TCP"
+	"crl4.digicert.com,80,TCP"
+	"ocsp.apple.com,80,TCP"
+	"ocsp.digicert.cn,80,TCP"
+	"ocsp.digicert.com,80,TCP"
+	"ocsp.entrust.net,80,TCP"
+	"ocsp2.apple.com,443,TCP"
+	"valid.apple.com,443,TCP"
+	
+	#Apple ID
+	"appleid.apple.com,443,TCP,Apple ID"
+	"appleid.cdn-apple.com,443,TCP"
+	"idmsa.apple.com,443,TCP"
+	"gsa.apple.com,443,TCP"
+	
+	#iCloud
+	"api.apple-cloudkit.com,443,TCP,iCloud"
+	"setup.apple-cloudkit.com,443,TCP"
+	"cdn.apple-livephotoskit.com,443,TCP"
+	"idmsaapz-mdn.apzones.com,443,TCP"
+	
+	#Additional Content
+	"audiocontentdownload.apple.com,80,TCP,Additional Content"
+	"audiocontentdownload.apple.com,443,TCP"
+	"devimages-cdn.apple.com,80,TCP"
+	"devimages-cdn.apple.com,443,TCP"
+	"download.developer.apple.com,80,TCP"
+	"download.developer.apple.com,443,TCP"
+	"playgrounds-assets-cdn.apple.com,443,TCP"
+	"playgrounds-cdn.apple.com,443,TCP"
+	"sylvan.apple.com,80,TCP"
+	"sylvan.apple.com,443,TCP"
+
+	#Jamf Hosts
+	"jamf.com,443,TCP,Jamf Services"
+	"www.jamfcloud.com,443,TCP"
+	"use1-jcdsdownloads.services.jamfcloud.com,443,TCP"
+	"use1-jcds.services.jamfcloud.com,443,TCP"
+	"euc1-jcdsdownloads.services.jamfcloud.com,443,TCP"
+	"euc1-jcds.services.jamfcloud.com,443,TCP"
+	"euw2-jcdsdownloads.services.jamfcloud.com,443,TCP"
+	"euw2-jcds.services.jamfcloud.com,443,TCP"
+	"apse2-jcdsdownloads.services.jamfcloud.com,443,TCP"
+	"apse2-jcds.services.jamfcloud.com,443,TCP"
+	"apne1-jcdsdownloads.services.jamfcloud.com,443,TCP"
+	"apne1-jcds.services.jamfcloud.com,443,TCP"
+	
+	#Jamf Protect Hosts
+	"a3bwx220ks5p1x-ats.iot.us-east-1.amazonaws.com,443,TCP,Jamf Protect"
+	"a3bwx220ks5p1x-ats.iot.us-east-1.amazonaws.com,8883,TCP"
+	"shared-jamf-jpt-generic-packages.s3.amazonaws.com,443,TCP"
+	"prod-use1-jamf-jpt-configs.s3.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.eu-west-2.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.eu-west-2.amazonaws.com,8883,TCP"
+	"prod-euw2-jamf-jpt-configs.s3.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.eu-central-1.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.eu-central-1.amazonaws.com,8883,TCP"
+	"prod-euc1-jamf-jpt-configs.s3.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.ap-northeast-1.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.ap-northeast-1.amazonaws.com,8883,TCP"
+	"prod-apne1-jamf-jpt-configs.s3.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.ap-southeast-2.amazonaws.com,443,TCP"
+	"a3bwx220ks5p1x-ats.iot.ap-southeast-2.amazonaws.com,8883,TCP"
+	"prod-apse2-jamf-jpt-configs.s3.amazonaws.com,443,TCP"
+	
+)
+
+NL=$'\n'
+
+#Combine default list and imported list into 1 Array
+FULL_ARRAY=()
+
+for LINE in "${APPLE_URL_ARRAY[@]}"; do
+	FULL_ARRAY+=("$LINE")
+done
+
+
+####################################################################################################
+# 
+# FUNCTIONS
+#
+####################################################################################################
+
+
+####################################################################################################
+# FILE FUNCTION
+###
+# Create a file into which we will save the Report ###
+#default location is /Users/Sahred, with current users Desktop as fallback
+function CreateEmptyReportFile () {
+	echo "[step] Creating the report file "
+	CURRENT_USER=$(/bin/ls -l /dev/console | awk '/ / { print $3 }')
+	USER_HOME="/Users/${CURRENT_USER}"
+	FOLDER="/Users/Shared"
+	if [[ ! -d "${FOLDER}" ]]; then
+		FOLDER="${USER_HOME}/Desktop"
+		if [[ ! -d "${FOLDER}" ]]; then
+			echo "[error] I wasn't able to locate the /Users/Shared or your desktop folder : \"${FOLDER}\""
+			exit 1
+		fi
+	fi
+	REPORT_FILE_NAME="Mac Environment Test [$(/bin/date +"%Y-%m-%dT%H%M")].html"
+	REPORT_PATH="${FOLDER}/${REPORT_FILE_NAME}"
+	touch "${REPORT_PATH}"
+	if [[ ! -f "${REPORT_PATH}" ]]; then
+		echo "[error] I wasn't able to create a results file : \"${REPORT_PATH}\""
+		exit 1
+	fi
+}
+
+####################################################################################################
+# HTML FORMATTING FUNCTIONS
+####################################################################################################
+
+function GenerateReportHTML () {
+/bin/cat &lt;&lt; EOF &gt;&gt; "${REPORT_PATH}"
+&lt;html&gt;
+	&lt;head&gt;  
+		&lt;style type="text/css"&gt;
+			body { background-color:#444444;font-family:Helvetica,Arial,sans-serif;margin:20px; }
+			h1 { margin-top:1em;margin-bottom:0.2em;color:#9eb8d5 }
+			h2 { margin-top:1em;margin-bottom:0.2em;color:#37bb9a }
+			h3 { margin-top:0.8em;margin-bottom:0.2em;color:#e8573f }
+			p { margin-top:0.2em;margin-bottom:0.2em;padding: 0 0 0 1px;color:white }
+			.tg    { border-collapse:collapse;border-spacing:0;border-color:#9ABAD9;width: 900px; }
+			.tg td { font-family:monospace;font-size:14px;padding:10px 20px;border-style:solid;border-width:0px;overflow:hidden;word-break:normal;border-top-width:1px;border-bottom-width:1px;border-color:#9ABAD9;color:#444;background-color:#EBF5FF; }
+			.tg th { font-family:Arial, sans-serif;font-size:14px;font-weight:normal;padding:10px 20px;border-style:solid;border-width:0px;overflow:hidden;word-break:normal;border-top-width:1px;border-bottom-width:1px;border-color:#9ABAD9;color:#fff;background-color:#409cff; }
+			.tg .tg-0lax { text-align:left;vertical-align:top }
+			.tg2    { border-collapse:collapse;border-spacing:0;border-color:#9ABAD9;width: auto; }
+			.tg2 td { font-family:monospace;font-size:14px;padding:10px 20px;border-style:solid;border-width:0px;overflow:hidden;word-break:normal;border-top-width:1px;border-bottom-width:1px;border-color:#9ABAD9;color:#444;background-color:#EBF5FF;vertical-align: top; }
+			.tg2 th { font-family:Arial, sans-serif;font-size:14px;font-weight:normal;padding:10px 20px;border-style:solid;border-width:0px;overflow:hidden;word-break:normal;border-top-width:1px;border-bottom-width:1px;border-color:#9ABAD9;color:#fff;background-color:#409cff; }
+			.bottom-table { margin-top: 1cm; border: none; border-spacing: 20px 0;}
+			a:link { color: white;}
+			a:visited { color: lightgreen;}
+			a:hover { color: hotpink;}
+			a:active { color: blue;}
+		&lt;/style&gt;
+	&lt;/head&gt;
+
+	&lt;body&gt;
+		&lt;h1&gt;Environment Tests&lt;/h1&gt;
+		&lt;p&gt;Date: $(/bin/date +"%a %d %b %Y %R")&lt;/p&gt;
+
+				&lt;h2&gt;Client Details&lt;/h2&gt;
+		&lt;p&gt;Computer Name: $(/usr/sbin/scutil --get ComputerName | /usr/bin/sed 's/’//')&lt;/p&gt;
+		&lt;p&gt;macOS Model: $(/usr/sbin/sysctl -n hw.model)&lt;/p&gt;
+		&lt;p&gt;macOS Version: $(/usr/bin/sw_vers -productVersion), $(/usr/bin/awk '/SOFTWARE LICENSE AGREEMENT FOR macOS/' '/System/Library/CoreServices/Setup Assistant.app/Contents/Resources/en.lproj/OSXSoftwareLicense.rtf' | /usr/bin/awk -F 'macOS ' '{print $NF}' | /usr/bin/tr -d '\\') build $(/usr/bin/sw_vers -buildVersion)&lt;/p&gt;
+		&lt;p&gt;Mac Serial: $computerSerial&lt;/p&gt;
+		&lt;p&gt;Secure Enclave: $secureEnclave&lt;/p&gt;
+
+		&lt;h2&gt;Client Network Details&lt;/h2&gt;
+		&lt;p&gt;Public IP: $publicIP&lt;/p&gt;
+		&lt;p&gt;Public DNS: $publicDNS&lt;/p&gt;
+		&lt;p&gt;Local IP: $localIP&lt;/p&gt;
+		&lt;p&gt;Active Interface: $activeInterface&lt;/p&gt;
+		&lt;p&gt;Active Service: $activeService&lt;/p&gt;
+		&lt;p&gt;SSID: $SSID&lt;/p&gt;
+		&lt;p&gt;Modified Hosts File: $hostFileModified&lt;/p&gt;
+EOF
+}
+
+function createShareReport () {
+/bin/cat &lt;&lt; EOF &gt;&gt; "${REPORT_PATH}"  
+		&lt;table class="bottom-table"&gt;
+			&lt;tr&gt;
+				&lt;td style=“padding-right:15px;”&gt;
+					&lt;img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAYCAYAAACIhL/AAAAMSWlDQ1BJQ0MgUHJvZmlsZQAASImVVwdUU8kanltSSWiBCEgJvYkivUgJoUUQkCrYCEkgocSYEETsLMsquBZUREBd0VURRdcCyFqxl0Wx94cFFWVdLNhQeZMCuu557533nzNzv/zzz/eXzJ07A4BOLU8qzUV1AciT5MviI0JYE1LTWKRHAAEUoAs8AYXHl0vZcXHRAMrg8+/y9hq0hnLZRcn1z/H/KnoCoZwPABIHcYZAzs+DeC8AeAlfKssHgOgD9dYz8qVKPAliAxkMEGKpEmepcYkSZ6hxlcomMZ4D8XYAyDQeT5YFgHYL1LMK+FmQR/sGxK4SgVgCgA4Z4kC+iCeAOBLiEXl505QY2gGHjG94sv7GmTHEyeNlDWF1Liohh4rl0lzezP+zHP9b8nIVgz7sYKOJZJHxypxh3W7kTItSYhrEPZKMmFiI9SF+Lxao7CFGqSJFZJLaHjXlyzmwZoAJsauAFxoFsSnE4ZLcmGiNPiNTHM6FGK4QtFCcz03UzF0olIclaDhrZdPiYwdxpozD1sxt5MlUfpX2xxU5SWwN/w2RkDvI/6ZIlJiijhmjFoiTYyDWhpgpz0mIUttgNkUiTsygjUwRr4zfBmI/oSQiRM2PTcmUhcdr7GV58sF8sYUiMTdGg6vzRYmRGp7tfJ4qfiOIW4QSdtIgj1A+IXowF4EwNEydO3ZRKEnS5It1SvND4jVzX0lz4zT2OFWYG6HUW0FsKi9I0MzFA/PhglTz4zHS/LhEdZx4RjZvbJw6HrwQRAMOCAUsoIAtA0wD2UDc3tPcA3+pR8IBD8hAFhACF41mcEaKakQC+wRQBP6ESAjkQ/NCVKNCUAD1n4e06t4FZKpGC1QzcsBjiPNAFMiFvxWqWZIhb8ngEdSI/+GdD2PNhU059k8dG2qiNRrFIC9LZ9CSGEYMJUYSw4mOuAkeiPvj0bAPhs0N98F9B6P9ak94TOggPCBcJXQSbk4VF8u+y4cFxoFO6CFck3PGtznjdpDVEw/BAyA/5MaZuAlwwT2gJzYeBH17Qi1HE7ky+++5/5bDN1XX2FFcKShlGCWY4vD9TG0nbc8hFmVNv62QOtaMobpyhka+98/5ptIC+Iz63hJbiO3BTmFHsTPYAawZsLDDWAt2HjuoxEOr6JFqFQ16i1fFkwN5xP/wx9P4VFZS7trg2u36ST2WLyxU7o+AM006UybOEuWz2HDnF7K4Ev7IESw3VzdXAJTfEfU29Zqp+j4gzLNfdcUFAAQ4DgwMHPiqi/YFYC/cR6ndX3UOcI/TtgDg9EK+Qlag1uHKjgCoQAe+UcbAHFgDB5iPG/AC/iAYhIGxIBYkglQwBVZZBNezDMwAs8ECUArKwTKwClSD9WAj2Ap2gN2gGRwAR8FJcA5cBFfBbbh6usBz0Avegn4EQUgIHWEgxogFYos4I26IDxKIhCHRSDySiqQjWYgEUSCzkR+QcqQCqUY2IPXIb8h+5ChyBulAbiL3kW7kFfIRxVAaaoCaoXboKNQHZaNRaCI6Gc1Cp6NFaAm6BK1C69DtaBN6FD2HXkU70edoHwYwLYyJWWIumA/GwWKxNCwTk2FzsTKsEqvDGrFW+D9fxjqxHuwDTsQZOAt3gSs4Ek/C+fh0fC6+GK/Gt+JN+HH8Mn4f78W/EOgEU4IzwY/AJUwgZBFmEEoJlYTNhH2EE/Bt6iK8JRKJTKI90Ru+janEbOIs4mLiWuJO4hFiB/EhsY9EIhmTnEkBpFgSj5RPKiWtIW0nHSZdInWR3pO1yBZkN3I4OY0sIReTK8nbyIfIl8hPyP0UXYotxY8SSxFQZlKWUjZRWikXKF2Ufqoe1Z4aQE2kZlMXUKuojdQT1DvU11paWlZavlrjtcRa87WqtHZpnda6r/WBpk9zonFok2gK2hLaFtoR2k3aazqdbkcPpqfR8+lL6PX0Y/R79PfaDO2R2lxtgfY87RrtJu1L2i90KDq2OmydKTpFOpU6e3Qu6PToUnTtdDm6PN25ujW6+3Wv6/bpMfRG68Xq5ekt1tumd0bvqT5J304/TF+gX6K/Uf+Y/kMGxrBmcBh8xg+MTYwTjC4DooG9Adcg26DcYIdBu0Gvob6hh2GyYaFhjeFBw04mxrRjcpm5zKXM3cxrzI/DzIaxhwmHLRrWOOzSsHdGw42CjYRGZUY7ja4afTRmGYcZ5xgvN242vmuCmziZjDeZYbLO5IRJz3CD4f7D+cPLhu8efssUNXUyjTedZbrR9Lxpn5m5WYSZ1GyN2TGzHnOmebB5tvlK80Pm3RYMi0ALscVKi8MWz1iGLDYrl1XFOs7qtTS1jLRUWG6wbLfst7K3SrIqttppddeaau1jnWm90rrNutfGwmaczWybBptbthRbH1uR7WrbU7bv7OztUux+smu2e2pvZM+1L7JvsL/jQHcIcpjuUOdwxZHo6OOY47jW8aIT6uTpJHKqcbrgjDp7OYud1zp3jCCM8B0hGVE34roLzYXtUuDS4HJ/JHNk9Mjikc0jX4yyGZU2avmoU6O+uHq65rpucr09Wn/02NHFo1tHv3JzcuO71bhdcae7h7vPc29xf+nh7CH0WOdxw5PhOc7zJ882z89e3l4yr0avbm8b73TvWu/rPgY+cT6LfU77EnxDfOf5HvD94Ofll++32+8vfxf/HP9t/k/H2I8Rjtk05mGAVQAvYENAZyArMD3wl8DOIMsgXlBd0INg62BB8ObgJ2xHdjZ7O/tFiGuILGRfyDuOH2cO50goFhoRWhbaHqYflhRWHXYv3Co8K7whvDfCM2JWxJFIQmRU5PLI61wzLp9bz+0d6z12ztjjUbSohKjqqAfRTtGy6NZx6Lix41aMuxNjGyOJaY4FsdzYFbF34+zjpsf9Pp44Pm58zfjH8aPjZ8efSmAkTE3YlvA2MSRxaeLtJIckRVJbsk7ypOT65HcpoSkVKZ0TRk2YM+FcqkmqOLUljZSWnLY5rW9i2MRVE7smeU4qnXRtsv3kwslnpphMyZ1ycKrOVN7UPemE9JT0bemfeLG8Ol5fBjejNqOXz+Gv5j8XBAtWCrqFAcIK4ZPMgMyKzKdZAVkrsrpFQaJKUY+YI64Wv8yOzF6f/S4nNmdLzkBuSu7OPHJeet5+ib4kR3J8mvm0wmkdUmdpqbRzut/0VdN7ZVGyzXJEPlnekm8AD+znFQ6KHxX3CwILagrez0iesadQr1BSeH6m08xFM58UhRf9OgufxZ/VNtty9oLZ9+ew52yYi8zNmNs2z3peybyu+RHzty6gLshZ8Eexa3FF8ZsfUn5oLTErmV/y8MeIHxtKtUtlpdd/8v9p/UJ8oXhh+yL3RWsWfSkTlJ0tdy2vLP+0mL/47M+jf676eWBJ5pL2pV5L1y0jLpMsu7Y8aPnWCr2KooqHK8ataFrJWlm28s2qqavOVHpUrl9NXa1Y3VkVXdWyxmbNsjWfqkXVV2tCanbWmtYuqn23VrD20rrgdY3rzdaXr//4i/iXGxsiNjTV2dVVbiRuLNj4eFPyplO/+vxav9lkc/nmz1skWzq3xm89Xu9dX7/NdNvSBrRB0dC9fdL2iztCd7Q0ujRu2MncWb4L7FLsevZb+m/Xdkftbtvjs6dxr+3e2n2MfWVNSNPMpt5mUXNnS2pLx/6x+9ta/Vv3/T7y9y0HLA/UHDQ8uPQQ9VDJoYHDRYf7jkiP9BzNOvqwbWrb7WMTjl05Pv54+4moE6dPhp88dop96vDpgNMHzvid2X/W52zzOa9zTec9z+/7w/OPfe1e7U0XvC+0XPS92NoxpuPQpaBLRy+HXj55hXvl3NWYqx3Xkq7duD7peucNwY2nN3NvvrxVcKv/9vw7hDtld3XvVt4zvVf3L8d/7ez06jx4P/T++QcJD24/5D98/kj+6FNXyWP648onFk/qn7o9PdAd3n3x2cRnXc+lz/t7Sv/U+7P2hcOLvX8F/3W+d0Jv10vZy4FXi18bv97yxuNNW19c3723eW/735W9N36/9YPPh1MfUz4+6Z/xifSp6rPj59YvUV/uDOQNDEh5Mp7qKIDBhmZmAvBqCwD0VAAYF+H5YaL6nqcSRH03VSHwn7D6LqgSLwAa4UN5XOccAWAXbHaw0YMBUB7VE4MB6u4+1DQiz3R3U3PR4I2H8H5g4LUZAKRWAD7LBgb61w4MfN4Eg70JwJHp6vulUojwbvCLhxJdYhbOB9/JvwGteX6xjLd3cAAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAgNpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IlhNUCBDb3JlIDUuNC4wIj4KICAgPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4KICAgICAgPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIKICAgICAgICAgICAgeG1sbnM6ZXhpZj0iaHR0cDovL25zLmFkb2JlLmNvbS9leGlmLzEuMC8iCiAgICAgICAgICAgIHhtbG5zOnRpZmY9Imh0dHA6Ly9ucy5hZG9iZS5jb20vdGlmZi8xLjAvIj4KICAgICAgICAgPGV4aWY6UGl4ZWxZRGltZW5zaW9uPjk4PC9leGlmOlBpeGVsWURpbWVuc2lvbj4KICAgICAgICAgPGV4aWY6UGl4ZWxYRGltZW5zaW9uPjExODwvZXhpZjpQaXhlbFhEaW1lbnNpb24+CiAgICAgICAgIDx0aWZmOk9yaWVudGF0aW9uPjE8L3RpZmY6T3JpZW50YXRpb24+CiAgICAgIDwvcmRmOkRlc2NyaXB0aW9uPgogICA8L3JkZjpSREY+CjwveDp4bXBtZXRhPgqMkK2UAAAGRElEQVRIDW1XS4scVRQ+9erumc4MTmYcZyLEETWJECeGEAlDotFEjVFIJEgQFPEXZCWCK0UXgoJkEVe6MuA2EhMCQoyLYKJIFqILXxAYNCbT8+ie6ld1V/l9595bXT3mDn3r3PP4znfuq2o8QXvr/TNHRiqVc9VqtRyFUQaVJ8LHcLOGYaVXcEeUZP+PUyi1DVA5HDTEGHuW9BIvjuNOq9k6/tG7py55p975+Pmp6ekLnu8HnXY7RfPVmdGOUWbRHWLOIXfQBL5vQvv91CQkAGPzIjDOoayg2DYZVL7npeVKxU/Tfn9leeloGJXL5/ppGnTbrRQJfM9noMXxIWiCAu7ACgkOmDEPTw9iI25qUWPVEUlV70nmMIgJaK1NU5g8CgcED3loyxDRbDbTUqkU+H74lR9FUaXfS1IwI1TeFEiXy4blFgrQqRod8viBJ7WVdTn+0rNy4thzUluNBejqYjoTzFIGjQBo+gAtnWWj40T1sQxRqVwJ/cDPwMOQs84msghmNAatqM8k9ENZWq3Loaf2yZN7dqhjrdaQb769KlMTY9Lr9y2LYhxlS5ARuUjB+GVpBppBhiXHxJM99KjDOjiwIpBD4dP8UJwsrzVk985H5PD+x6XeiGW1vi7PLMzLnvntsK3rTLqkAyYOy5KxeABWbMMDswZuoa4iNwcbnhpajM83sTqgM8YA5JJuTx6am5U3Th6VS5d/lK2zE3SSm38vy2snj0g9Xpdb/9YkikLRg5MvsUvgFp15nU4hdOszF5aWBvzI1IpGMGrrjoebVUqetDtdWby9goEvV67/Kp988bWMlCP9nT57Qb6DjgUv3l6VdjfRA2LyFHA1rcs9wC9eVaESILFhAeAMdHo+zYAwCfbV1vtn5NDCbuliFjuNZTk4/yD2W6plHJifk9bakszNTsm2B2blj5u3ZPGf2xKFPDhDoFqEIbQhny6tiCGoPMzy2kXWGFcTIZ2cIgGX9/UTR2S0UpJmqyWbqlXdezh5ivQwSB09fADXTizV0RFZaHXkwzNngVlEMqCq4RazhAjAhTf5cAhZUAYHjw52D9LoCDlI90xxB5dLvi7l51+el+s//y6T41VZvLMme3c9Snw5f+WG3PjlL6nVY9k3v03efPVFKYeBLnWAe9bwJCKbnZICSWrc7gz1DCBCCdinCTS9I8p4c9jhC5Ipugj338SmERnHr7y6rhisv1wKVJemmG3scryd8HOEiAs5H+aCmZXcZARdYiZ3Te9LNyg+XSAqorvr+cbAnWXnwSXL9E3CIujsfHk0dfaKuJAZpRQ0PB9BiSUucBv2dLkINlQB3GyQgTIDLn3gB/TWGabWKx40yLoKNJCo0ioiOGIWnEBo5h40sunhx4qVBGMIZMtWfWFMG114emcmx+Xi5e8V4z7IvV4fYYVkun1QRRbYKLo6O8gzDdG0AIXRrnCKB0om1cyqciBOpdbcmaBc5igKcEEvqb5SikxNQ67EcTOXh+dCPiFDMXrNUDNM21AyOuNv7VwjRTIeeBVJKQhxWHyQFBkbxezQBQPaQpDG91FOQo186+uKOH0hf1Flo0J+5tj5NSoMGc/9ozjQqswnsfhDx7/VRlN+W7wjU+Ojgk82GowdjgHeMMuwb5nerL5q0HW8Cwt4DBqT2xFEe804jU1AyA0xGqIMkYoHAjP38gsHZf/enXhD4DodCmBRniS9nkxPTaov4TQLusHedHvP2IwPtwGb6UNSAdaAoUMy9oIrgXmvedLsJHL56k/y2PY52TJzr/oMle3g4M8vHvo2212plFgIPV0ShNrMrj6ujGvQZd7bH3yahWGIfY5v3wFN6wNn3XMuBE+L3YhbUm92VMEwhXXYUCiUDR8fLQu/sq0XnoVm8dRGf2vCpKVJr++HzWbcntg8WUmSbor96Bv/4d6MLA1Essp7xqoygVfc3VueBmaecrxN7Hva+RtMO8KAVz2RbZZ+FJWCtbWl9TBuxcdG2qMXK5VK0EsS7nQl6WpxqQZTbzT9FPfchmwKrsrc4jxsYpveRuZ0aEWInlfMHP6zDNqtVi3pdJ8Obly78ueOXU/8gE/zV7DxI/xron458kaBuZmHTWV0mNW8qVgYF/2HnfKRCgjhken1en6jUZe1lZVjn51+79p/XcDo2s0p78EAAAAASUVORK5CYII=" /&gt;
+				&lt;/td&gt;
+				&lt;td style=color:white; &gt;
+					Want to share this report? Use the share button in the upper-right corner of your Safari window or email the saved file (${REPORT_PATH}").
+				&lt;/td&gt;
+			&lt;/tr&gt;
+		&lt;/table&gt;
+	&lt;/body&gt;
+&lt;/html&gt;
+EOF
+}
+####################################################################################################
+# PROXY INFO FUNCTIONS
+####################################################################################################
+
+function CreateProxyTable () {
+	
+
+/bin/cat &lt;&lt; EOF &gt;&gt; "${REPORT_PATH}"  
+		&lt;h2&gt;Proxy Settings&lt;/h2&gt;
+		&lt;table class="tg"&gt;
+			&lt;tr&gt;
+				&lt;th&gt;Interface&lt;/th&gt;
+				&lt;th&gt;Auto Proxy Discovery&lt;/th&gt;
+				&lt;th&gt;Auto Proxy Config&lt;/th&gt;
+				&lt;th&gt;Web Proxy&lt;/th&gt;
+				&lt;th&gt;Secure Web Proxy&lt;/th&gt;
+				&lt;th&gt;FTP Proxy&lt;/th&gt;
+				&lt;th&gt;Socks Proxy&lt;/th&gt;
+				&lt;th&gt;Streaming Proxy&lt;/th&gt;
+				&lt;th&gt;Gopher Proxy&lt;/th&gt;
+				&lt;th&gt;Proxy Bypass Domains&lt;/th&gt;
+				&lt;th&gt;Static DNS Servers&lt;/th&gt;
+				&lt;th&gt;Static Search Domains&lt;/th&gt;
+			&lt;/tr&gt;
+			${PROXY_INFO_TABLE_ROWS}
+		&lt;/table&gt;
+EOF
+}
+
+#### Local macOS Additional Network information ###
+function CalculateProxyInfoTableRows () {
+
+	echo "[step] Getting proxy config info..."
+	PROXY_INFO_TABLE_ROWS=''
+
+	#Build Array of network interfaces, replacing a " " with "_" it will be removed during the Loop
+	ALL_INTERFACE_NAMES=$(/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | sed -e 's/ /_/g')
+	
+	for INTERFACE_NAME in ${ALL_INTERFACE_NAMES};
+	do
+		INTERFACE_NAME_NO_UNDERSCORE=$(echo ${INTERFACE_NAME} | sed -e 's/_/ /g') # Replace _ with a space for readability
+		echo "  &gt; Checking proxy on ${INTERFACE_NAME_NO_UNDERSCORE}"
+		AUTO_PROXY=$(/usr/sbin/networksetup -getproxyautodiscovery "${INTERFACE_NAME_NO_UNDERSCORE}")
+		AUTO_PROXY_URL=$(/usr/sbin/networksetup -getautoproxyurl "${INTERFACE_NAME_NO_UNDERSCORE}")
+		WEB_PROXY=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		SECURE_WEB_PROXY=$(/usr/sbin/networksetup -getsecurewebproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		FTP_PROXY=$(/usr/sbin/networksetup -getftpproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		SOCKS_PROXY=$(/usr/sbin/networksetup -getsocksfirewallproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		STREAMING_PROXY=$(/usr/sbin/networksetup -getstreamingproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		GOPHER_PROXY=$(/usr/sbin/networksetup -getgopherproxy "${INTERFACE_NAME_NO_UNDERSCORE}")
+		PROXY_BYPASS_DOMAINS=$(/usr/sbin/networksetup -getproxybypassdomains "${INTERFACE_NAME_NO_UNDERSCORE}")
+		PROXY_BYPASS_DOMAINS="${PROXY_BYPASS_DOMAINS//$'\n'/&lt;br /&gt;}"  # Domain lists can have newlines... convert to html &lt;br&gt;
+		DNS_SERVERS=$(/usr/sbin/networksetup -getdnsservers "${INTERFACE_NAME_NO_UNDERSCORE}")
+		SEARCH_DOMAINS=$(/usr/sbin/networksetup -getsearchdomains "${INTERFACE_NAME_NO_UNDERSCORE}")
+
+
+		if [[ ${AUTO_PROXY} == *"Auto Proxy Discovery: Off"* ]]; then
+			AUTO_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			AUTO_PROXY_STATUS='&lt;td style="color: red;"&gt;On&lt;/td&gt;'
+		fi
+		if [[ ${AUTO_PROXY_URL} == *"Enabled: No"* ]]; then
+			AUTO_PROXY_URL_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			AUTO_PROXY_URL_STATUS=$(/usr/sbin/networksetup -getautoproxyurl "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==1' | awk '{print $2}')
+			AUTO_PROXY_URL_STATUS="&lt;td style=\"color: red\"&gt;${AUTO_PROXY_URL_STATUS}&lt;/td&gt;"
+		fi
+		if [[ ${WEB_PROXY} == *"Enabled: No"* ]]; then
+			WEB_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			WEB_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			WEB_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			WEB_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${WEB_PROXY_URL}:${WEB_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${SECURE_WEB_PROXY} == *"Enabled: No"* ]]; then
+			SECURE_WEB_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			SECURE_WEB_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			SECURE_WEB_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			SECURE_WEB_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${SECURE_WEB_PROXY_URL}:${SECURE_WEB_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${FTP_PROXY} == *"Enabled: No"* ]]; then
+			FTP_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			FTP_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			FTP_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			FTP_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${FTP_PROXY_URL}:${FTP_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${SOCKS_PROXY} == *"Enabled: No"* ]]; then
+			SOCKS_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			SOCKS_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			SOCKS_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			SOCKS_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${SOCKS_PROXY_URL}:${SOCKS_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${STREAMING_PROXY} == *"Enabled: No"* ]]; then
+			STREAMING_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			STREAMING_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			STREAMING_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			STREAMING_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${STREAMING_PROXY_URL}:${STREAMING_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${GOPHER_PROXY} == *"Enabled: No"* ]]; then
+			GOPHER_PROXY_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			GOPHER_PROXY_URL=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==2'| awk '{print $2}')
+			GOPHER_PROXY_PORT=$(/usr/sbin/networksetup -getwebproxy "${INTERFACE_NAME_NO_UNDERSCORE}" | awk 'NR==3'| awk '{print $2}')
+			GOPHER_PROXY_STATUS="&lt;td style=\"color: red\"&gt;${GOPHER_PROXY_URL}:${GOPHER_PROXY_PORT}&lt;/td&gt;"
+		fi
+		if [[ ${PROXY_BYPASS_DOMAINS} == *"There aren't any bypass domains set"* ]]; then
+			PROXY_BYPASS_DOMAINS_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			PROXY_BYPASS_DOMAINS_STATUS="&lt;td style=\"color: black\"&gt;${PROXY_BYPASS_DOMAINS}&lt;/td&gt;"
+		fi
+		if [[ ${DNS_SERVERS} == *"There aren't any DNS Servers set"* ]]; then
+			DNS_SERVERS_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			DNS_SERVERS_STATUS="&lt;td style=\"color: red\"&gt;${DNS_SERVERS}&lt;/td&gt;"
+		fi
+		if [[ ${SEARCH_DOMAINS} == *"There aren't any Search Domains set"* ]]; then
+			SEARCH_DOMAINS_STATUS='&lt;td style="color: green;"&gt;Off&lt;/td&gt;'
+			else
+			SEARCH_DOMAINS_STATUS="&lt;td style=\"color: red\"&gt;${SEARCH_DOMAINS}&lt;/td&gt;"
+		fi
+		PROXY_INFO_TABLE_ROWS+="      &lt;tr&gt;
+				&lt;td&gt;${INTERFACE_NAME_NO_UNDERSCORE}${IS_ACTIVE_INTERFACE}&lt;/td&gt;
+				${AUTO_PROXY_STATUS}
+				${AUTO_PROXY_URL_STATUS}
+				${WEB_PROXY_STATUS}
+				${SECURE_WEB_PROXY_STATUS}
+				${FTP_PROXY_STATUS}
+				${SOCKS_PROXY_STATUS}
+				${STREAMING_PROXY_STATUS}
+				${GOPHER_PROXY_STATUS}
+				${PROXY_BYPASS_DOMAINS_STATUS}
+				${DNS_SERVERS_STATUS}
+				${SEARCH_DOMAINS_STATUS}
+			&lt;/tr&gt;"
+		done
+}
+
+
+####################################################################################################
+# Current Interface Proxy details
+####################################################################################################
+
+function getProxyAddress () {
+
+	#Set PROXY HOST and PORT variables to be empty before checks
+	PROXY_HOST=""
+	PROXY_PORT=""
+	
+	#Get Any and All proxy settings from current active interface
+	PROXY_DATA_LOCATION="/tmp/Current_Proxy"
+	PROXY_DATA=$(/usr/sbin/scutil --proxy &gt; ${PROXY_DATA_LOCATION})
+	
+	#Detect which setting is enabled
+	AUTO_PROXY_DISCOVERY_STATUS=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep ProxyAutoDiscoveryEnable | /usr/bin/awk '{print $3}')
+	AUTO_PROXY_CONFIGURATION_STATUS=$(/bin/cat ${PROXY_DATA_LOCATION}| /usr/bin/grep ProxyAutoConfigEnable | /usr/bin/awk '{print $3}')
+	SECURE_WEB_PROXY_STATUS=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPSEnable | /usr/bin/awk '{print $3}')
+	WEB_PROXY_STATUS=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPEnable | /usr/bin/awk '{print $3}')
+
+	
+	#If Auto Proxy Discovery is Enabled then query and get prosy host and port
+	if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]] &amp;&amp; [[ ${AUTO_PROXY_DISCOVERY_STATUS} == "1" ]]; then
+		AUTO_PROXY_DISCOVERY_URL=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep ProxyAutoConfigURLString | /usr/bin/awk '{print $3}')
+		#test URL default is http://wpad/wpad.dat if not resolving then setting to empty
+		AUTO_PROXY_DISCOVERY_URL_STATUS=$(/usr/bin/curl -Is ${AUTO_PROXY_DISCOVERY_URL} | /usr/bin/head -n 1)
+		if [[ ${AUTO_PROXY_DISCOVERY_URL_STATUS} == "HTTP/1.1 200 OK" ]]; then
+			#Pac url is contactable, lets parse it for proxy host and port
+			AUTO_PROXY_DISCOVERY_URL_CONTENT=$(/usr/bin/curl ${AUTO_PROXY_DISCOVERY_URL})
+			#Get Proxy Host
+			PROXY_HOST=$(echo ${AUTO_PROXY_DISCOVERY_URL}_CONTENT | /usr/bin/grep PROXY | /usr/bin/tail -n 1 | /usr/bin/awk '{print $3}' | /usr/bin/tr -d "';" | /usr/bin/cut -d: -f1)
+			#Get Proxy Port
+			PROXY_PORT=$(echo ${AUTO_PROXY_DISCOVERY_URL}_CONTENT | /usr/bin/grep PROXY | /usr/bin/tail -n 1 | /usr/bin/awk '{print $3}' | /usr/bin/tr -d "';" | /usr/bin/cut -d: -f2)
+		else
+			PROXY_HOST=""
+			PROXY_PORT=""
+			
+		fi
+	fi
+	
+	#If Auto Proxy Configuration is Enabled then query and get prosy host and port
+	if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]] &amp;&amp; [[ ${AUTO_PROXY_CONFIGURATION_STATUS} == "1" ]]; then
+	
+		AUTO_PROXY_DISCOVERY_URL=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep ProxyAutoConfigURLString | /usr/bin/awk '{print $3}')
+		#test URL default is http://wpad/wpad.dat if not resolving then setting to empty
+		AUTO_PROXY_DISCOVERY_URL_STATUS=$(/usr/bin/curl -Is ${AUTO_PROXY_DISCOVERY_URL} | /usr/bin/head -n 1)
+		if [[ ${AUTO_PROXY_DISCOVERY_URL_STATUS} =~ "HTTP" ]]; then
+			#Pac url is contactable, lets parse it for proxy host and port
+			#Get Proxy Host
+			PROXY_HOST=$(/usr/bin/curl ${AUTO_PROXY_DISCOVERY_URL} | /usr/bin/grep 'PROXY' | /usr/bin/tail -n 1 | /usr/bin/awk '{print $3}' | /usr/bin/tr -d "';" | /usr/bin/cut -d: -f1)
+			#Get Proxy Port
+			PROXY_PORT=$(/usr/bin/curl ${AUTO_PROXY_DISCOVERY_URL} | /usr/bin/grep 'PROXY' | /usr/bin/tail -n 1 | /usr/bin/awk '{print $3}' | /usr/bin/tr -d "';" | /usr/bin/cut -d: -f2)
+		else
+			PROXY_HOST=""
+			PROXY_PORT=""
+			
+		fi
+	fi
+	
+	#If Secure Web Proxy is Enabled then query and get proxy host and port
+	if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]] &amp;&amp; [[ $SECURE_WEB_PROXY_STATUS == "1" ]]; then
+		#extract Host and port from scutil
+		PROXY_HOST=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPProxy | /usr/bin/awk '{print $3}')
+		PROXY_PORT=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPPort | /usr/bin/awk '{print $3}')
+	fi
+	
+	#If Web Proxy is Enabled then query and get proxy host and port
+	if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]] &amp;&amp; [[ $WEB_PROXY_STATUS == "1" ]]; then
+		#extract Host and port from scutil
+		PROXY_HOST=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPProxy | /usr/bin/awk '{print $3}')
+		PROXY_PORT=$(/bin/cat ${PROXY_DATA_LOCATION} | /usr/bin/grep HTTPPort | /usr/bin/awk '{print $3}')
+	fi
+	
+}
+
+####################################################################################################
+# NETWORK CHECK FUNCTIONS
+####################################################################################################
+### Get HOSTNAME Connection Status ###
+function CalculateHostInfoTables () {
+	echo "[step] Checking Apple Hosts..."
+	lastCategory="zzzNone"  # Some fake category so we recognize that the first host is the start of a new category
+	firstServer="yes"       # Flag for the first host so we don't try to close the preceding table -- there won't be one. 
+	HOST_TEST_TABLES=''    # This is the var we will insert into the HTML
+	for SERVER in "${FULL_ARRAY[@]}"; do
+		#split the record info fields
+		HOSTNAME=$(echo ${SERVER} | cut -d ',' -f1)
+		PORT=$(echo ${SERVER} | cut -d ',' -f2)
+		PROTOCOL=$(echo ${SERVER} | cut -d ',' -f3)
+		CATEGORY=$(echo ${SERVER} | cut -d ',' -f4)
+		# We have categories of hosts... enrollment, software update, etc. We'll put them in separate tables
+		# If the category for this host is different than the last one and is not blank...
+		if [[ "${lastCategory}" != "${CATEGORY}" ]] &amp;&amp; [[ ! -z "${CATEGORY}" ]]; then
+			# If this is not the first server, close up the table from the previous category before moving on to the next. 
+			echo "Starting Category : ${CATEGORY}"
+			if [[ "${firstServer}" != "yes" ]]; then
+				#We've already started the table html so no need to do it again.  
+				HOST_TEST_TABLES+="    &lt;/table&gt;${NL}"
+			fi
+			firstServer="no"
+			lastCategory="${CATEGORY}"
+			HOST_TEST_TABLES+="    &lt;h3&gt;${CATEGORY}&lt;/h3&gt;${NL}"
+			HOST_TEST_TABLES+="    &lt;table class=\"tg\"&gt;${NL}"
+			HOST_TEST_TABLES+="      &lt;tr&gt;&lt;th width=\"40%\"&gt;HOSTNAME&lt;/th&gt;&lt;th width=\"50%\"&gt;Reverse DNS&lt;/th&gt;&lt;th width=\"10%\"&gt;IP Address&lt;/th&gt;&lt;th width=\"10%\"&gt;Port&lt;/th&gt;&lt;th width=\"10%\"&gt;Protocol&lt;/th&gt;&lt;th width=\"10%\"&gt;Accessible&lt;/th&gt;&lt;th width=\"20%\"&gt;SSL Error&lt;/th&gt;&lt;/tr&gt;${NL}"
+		fi # End of table start and end logic.
+
+		echo "  &gt; Checking connectivity to : ${HOSTNAME} ${PORT} ${PROTOCOL}"
+
+		# Now print the info for this host...
+		#Perform Host nslookup to get reported IP
+		IP_ADDRESS=$(/usr/bin/nslookup ${HOSTNAME} | /usr/bin/grep "Address:" | /usr/bin/awk '{print$2}' | /usr/bin/tail -1)
+		
+		
+		#Get Reverse DNS record
+		REVERSE_DNS=$(/usr/bin/dig -x ${IP_ADDRESS} +short | /usr/bin/sed 's/.$//')
+		
+		# Using nc, if proxy defined then adding in proxy flag
+		if [[ ${PROTOCOL} == "TCP" ]]; then
+			#Check if Proxy set
+			if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]];then
+				#no proxy set
+				STATUS=$(/usr/bin/nc -z -G 3 ${HOSTNAME} ${PORT} 2&gt;&amp;1 | /usr/bin/awk '{print $7}')	
+			else
+				STATUS=$(/usr/bin/nc -z -G 3 -x ${PROXY_HOST}:${PROXY_PORT} -X connect ${HOSTNAME} ${PORT} 2&gt;&amp;1 | /usr/bin/awk '{print $7}')
+			fi
+			
+		elif [[ ${PROTOCOL} == "TCP - non-proxied" ]]; then
+			#for non proxy aware urls we will be using netcat aka nc
+			STATUS=$(/usr/bin/nc -z -G 3 ${HOSTNAME} ${PORT} 2&gt;&amp;1 | /usr/bin/awk '{print $7}')
+		else    
+			# UDP goes direct... not proxied. 
+			STATUS=$(/usr/bin/nc -u -z -G 3 ${HOSTNAME} ${PORT} 2&gt;&amp;1 | /usr/bin/awk '{print $7}')
+
+		fi
+		
+		#Based on Status will set Availability Value
+		if [[ ${STATUS} =~ "succeeded" ]]; then
+			AVAILBILITY="succeeded"
+		
+		else
+			AVAILBILITY="failed"
+		fi
+
+
+		if [[ "${AVAILBILITY}" == "succeeded" ]]; then
+			AVAILBILITY_STATUS='&lt;td style="color: green;"&gt;Available&lt;/td&gt;'
+			#Test for SSL Inspection
+			if [[ ${PORT} == "80" ]]; then
+				#http traffic no ssl inspection issues
+				SSL_STATUS='&lt;td style="color: green;"&gt;N/A&lt;/td&gt;'
+			else
+				if [[ ${PROTOCOL} == "TCP" ]]; then                
+					if [[ ${PROXY_HOST} == "" ]] &amp;&amp; [[ ${PROXY_PORT} == "" ]];then
+						CERT_STATUS=$(echo | /usr/bin/openssl s_client -showcerts -connect "${HOSTNAME}:${PORT}" -servername "${HOSTNAME}" 2&gt;/dev/null | /usr/bin/openssl x509 -noout -issuer )
+						
+					else
+						CERT_STATUS=$(echo | /usr/bin/openssl s_client -showcerts -proxy "${PROXY_HOST}:${PROXY_PORT}" -connect "${HOSTNAME}:${PORT}" -servername "${HOSTNAME}" 2&gt;/dev/null | /usr/bin/openssl x509 -noout -issuer)
+					fi
+
+					if [[ ${CERT_STATUS} != *"Apple Inc"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"Akamai Technologies"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"Amazon"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"DigiCert"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"Microsoft"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"COMODO"* ]] &amp;&amp; [[ "${CERT_STATUS}" != *"QuoVadis"* ]]; then
+						
+						SSL_ISSUER=$(echo ${CERT_STATUS} | awk -F'O=|/OU' '{print $2}')
+						
+						if [[ ${HOSTNAME} == *"jcdsdownloads.services.jamfcloud.com" ]];then
+							SSL_STATUS='&lt;td style="color: green;"&gt;N/A&lt;/td&gt;'
+						else	
+							SSL_STATUS="&lt;td style=\"color: red;\"&gt;Unexpected Certificate: ${SSL_ISSUER}&lt;/td&gt;"
+						fi
+						
+					else	
+						
+						SSL_STATUS='&lt;td style="color: green;"&gt;Successful&lt;/td&gt;'
+					fi
+				else
+					SSL_STATUS='&lt;td style="color: green;"&gt;N/A&lt;/td&gt;'
+				fi
+			fi
+		else
+			# nc did not connect. There is no point in trying the SSL cert subject test. 
+			AVAILBILITY_STATUS='&lt;td style="color: red;"&gt;Unavailable&lt;/td&gt;'
+			SSL_STATUS='&lt;td style="color: black;"&gt;Not checked&lt;/td&gt;'
+		fi
+
+		# Done. Stick the row of info into the HTML var...
+		HOST_TEST_TABLES+="        &lt;tr&gt;&lt;td&gt;${HOSTNAME}&lt;/td&gt;&lt;td&gt;${REVERSE_DNS}&lt;/td&gt;&lt;td&gt;${IP_ADDRESS}&lt;/td&gt;&lt;td&gt;${PORT}&lt;/td&gt;&lt;td&gt;${PROTOCOL}&lt;/td&gt;${AVAILBILITY_STATUS}${SSL_STATUS}&lt;/tr&gt;${NL}"
+	done
+	# Close up the html for the final table
+	HOST_TEST_TABLES+="    &lt;/table&gt;${NL}"
+}
+
+#Create NetworkCheck table
+function createNetworkCheckTable () {
+/bin/cat &lt;&lt; EOF &gt;&gt; "${REPORT_PATH}"  
+		&lt;p /&gt;
+		&lt;h2&gt;Server Connectivity Tests&lt;/h2&gt;
+		&lt;p&gt;Network access to the following hostnames are required for enrolling, installing, restoring or updating Apple OSs. We will test the ability to reach these services from this device. We will also check SSL certificate subjects to see if any proxies may be replacing them. Many Apple services use certificate pinning to prevent SSL interception.&lt;/p&gt;
+		&lt;p&gt;
+			&lt;u&gt;References:&lt;/u&gt; &lt;a href="https://support.apple.com/en-us/HT210060" style="color:white;"&gt;Use Apple products on enterprise networks&lt;/a&gt; / &lt;a href="https://support.apple.com/en-us/HT201999" style="color:white;"&gt;About macOS, iOS, and iTunes server host connections&lt;/a&gt; / &lt;a href="https://www.jamf.com/jamf-nation/articles/34" style="color:white;"&gt;Network Ports Used by Jamf Pro&lt;/a&gt; /
+			&lt;a href="https://www.jamf.com/jamf-nation/articles/409" style="color:white;"&gt;Permitting Inbound/Outbound Traffic with Jamf Cloud&lt;/a&gt;
+			
+		&lt;/p&gt;
+${HOST_TEST_TABLES}
+EOF
+}
+
+####################################################################################################
+# ADDITIONAL CHECK FUNCTIONS
+####################################################################################################
+
+#Running Additional Checks
+function createAdditionalChecksHTML () {
+/bin/cat &lt;&lt; EOF &gt;&gt; "${REPORT_PATH}"
+		&lt;h2&gt;Other Information and Settings&lt;/h2&gt;
+		&lt;table class="tg2"&gt;
+			&lt;tr&gt;
+				&lt;th&gt;Test&lt;/th&gt;
+				&lt;th&gt;Answer&lt;/th&gt;
+				&lt;th&gt;Follow-up&lt;/th&gt;
+				&lt;th&gt;References&lt;/th&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;APNS apsctl Status&lt;/td&gt;
+				${APSCTL_STATUS}
+				&lt;td&gt;Apple Push Notifications should be accessible. &lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-us/HT203609" style="color:black;"&gt;If your clients aren't getting Apple push notifications&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Root User Status&lt;/td&gt;
+				${ROOT_USER_STATUS}
+				&lt;td&gt;The root user is not intended for routine use, if enabled, steps should be taken to disable&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-us/HT204012" style="color:black;"&gt;How to enable and disable the root user&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;SIP Status&lt;/td&gt;
+				${SIP_STATUS}
+				&lt;td&gt;SIP is a security feature of macOS if disabled it is recommended to re-enable&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-us/HT204899" style="color:black;"&gt;About System Integrity Protection on your Mac&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Gatekeeper Status&lt;/td&gt;
+				${GATEKEEPER_STATUS}
+				&lt;td&gt;If GateKeeper is disabled it opens your machine to malicious content&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment-reference-macos/gatekeeper-and-runtime-protection-apd02b925e38" style="color:black;"&gt;About GateKeeper on your Mac&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Gatekeeper Configuration&lt;/td&gt;
+				${MDM_GATEKEEPER_CONFIGURATION_STATUS}
+				&lt;td&gt;Determines if GateKeeper is managed by MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment-reference-macos/gatekeeper-and-runtime-protection-apd02b925e38" style="color:black;"&gt;About Gatekeeper on your Mac&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Firewall Status&lt;/td&gt;
+				${FIREWALL_STATUS}
+				&lt;td&gt;Determines status of Firewall&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/security-privacy-payload-settings-dep61dc030/web" style="color:black;"&gt;Security &amp; Privacy MDM payload settings for Apple devices&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Firewall Configuration&lt;/td&gt;
+				${MDM_FIREWALL_CONFIGURATION_STATUS}
+				&lt;td&gt;Determines if the built-in firewall is managed by MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/security-privacy-payload-settings-dep61dc030/web" style="color:black;"&gt;Security &amp; Privacy MDM payload settings for Apple devices&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;FileVault Status&lt;/td&gt;
+				${FILEVAULT_STATUS}
+				&lt;td&gt;If FileVault is not enabled the device is not encrypted&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-us/HT204837" style="color:black;"&gt;Use FileVault to encrypt your Mac&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;FileVault Recovery Key Escrow Configuration&lt;/td&gt;
+				${MDM_PRK_ESCROW_STATUS}
+				&lt;td&gt;Determines if MDM is configured to escrow FileVault recovery keys.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-us/HT204837" style="color:black;"&gt;Use FileVault to encrypt your Mac&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Legacy Software Update Server Status&lt;/td&gt;
+				${LEGACY_SWUS_STATUS}
+				&lt;td&gt;If a legacy software update server configuration was deployed to this Mac&lt;/td&gt;
+				&lt;td&gt;Use Apple Software Update Servers&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Active Directory Domain&lt;/td&gt;
+				${AD_STATUS}
+				&lt;td&gt;If binding is used, discuss modern authentication and no-bind approaches.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://www.jamf.com/products/jamf-connect/" style="color:black;"&gt;About NoMAD and Jamf Connect&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Content Cache&lt;/td&gt;
+				${CONTENT_CACHE_STATUS}
+				&lt;td&gt;If none is available, discuss how Apple content caching improves user experience and reduces WAN traffic.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/en-au/guide/mac-help/mchl9388ba1b/10.15/mac/10.15" style="color:black;"&gt;What is content caching on Mac?&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;MDM Enrollment&lt;/td&gt;
+				${ADE_ENROLLED_STATUS}
+				&lt;td&gt;Determines if the Mac was deployed via Automated Device Enrollment.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://docs.jamf.com/10.41.0/jamf-pro/documentation/Automated_Device_Enrollment_Integration.html" style="color:black;"&gt;Automated Device Enrollment Integration&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;MDM Enrollment Type&lt;/td&gt;
+				${MDM_ENROLLED_STATUS}
+				&lt;td&gt;Determines if the device is enrolled in an MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/intro-to-apple-device-enrollment-types-dep08f54fcf6/web" style="color:black;"&gt;Automated Device Enrollment Integration&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;MDM Server URL&lt;/td&gt;
+				${MDM_SERVER_URL}
+				&lt;td&gt;Displays URL of MDM server in which this Mac is enrolled.&lt;/td&gt;
+				&lt;td&gt;MDM Server&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Automatic Login Configuration&lt;/td&gt;
+				${MDM_LOGIN_CONFIGURATION_STATUS}
+				&lt;td&gt;Determines if automatic login is managed by MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/login-window-payload-settings-dep2a822b29/web" style="color:black;"&gt;Login Window MDM payload settings for Apple devices&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Bootstrap Token&lt;/td&gt;
+				${BOOTSTRAP_TOKEN_STATUS}
+				&lt;td&gt;Determines if a bootstrap token has been deployed to this Mac computer.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/use-secure-and-bootstrap-tokens-dep24dbdcf9e/web" style="color:black;"&gt;Use secure token, bootstrap token, and volume ownership in deployments&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Guest Account Configuration&lt;/td&gt;
+				${MDM_GUEST_CONFIGURATION_STATUS}
+				&lt;td&gt;Determines if guest account settings are managed with MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://support.apple.com/guide/deployment/login-window-payload-settings-dep2a822b29/web" style="color:black;"&gt;Login Window MDM payload settings for Apple devices&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Screen Saver Idle Time Configuration&lt;/td&gt;
+				${MDM_SCREENSAVER_IDLE_TIME_STATUS}
+				&lt;td&gt;Determines if screen saver idle time is managed by MDM.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://developer.apple.com/documentation/devicemanagement/screensaver" style="color:black;"&gt;Screensaver MDM Payload&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Launch Daemons&lt;/td&gt;
+				&lt;td&gt;${LAUNCH_DAEMONS_STATUS}&lt;/td&gt;
+				&lt;td&gt;Verify that all are expected and needed.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/Introduction.html" style="color:black;"&gt;About Daemons and Services&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+			&lt;tr&gt;
+				&lt;td&gt;Third-Party System Extensions&lt;/td&gt;
+				&lt;td&gt;${KEXT_STATUS}&lt;/td&gt;
+				&lt;td&gt;Discuss upgrades or replacement solutions that decrease reliance on kernel extensions.&lt;/td&gt;
+				&lt;td&gt;&lt;a href="https://developer.apple.com/support/kernel-extensions/" style="color:black;"&gt;Deprecated Kernel Extensions and System Extension Alternatives&lt;/a&gt;&lt;/td&gt;
+			&lt;/tr&gt;
+		&lt;/table&gt;
+EOF
+}
+
+function calculateAdditionalChecks () {
+	#this function is used to populate information into the Addtional Checks Report
+	
+	#apsctl Status
+	APSCTL_STATUS_CHECK=$(/System/Library/PrivateFrameworks/ApplePushService.framework/apsctl status | /usr/bin/grep "connected to server hostname:")
+		if [[ ${APSCTL_STATUS_CHECK} =~ "courier.push.apple.com" ]]; then
+			APSCTL_STATUS='&lt;td style="color: green;"&gt;Connected&lt;/td&gt;'
+		else
+			APSCTL_STATUS='&lt;td style="color: red;"&gt;Unavailable&lt;/td&gt;'
+		fi
+	
+	#Root User Status
+	ROOT_USER_CHECK=$(/usr/bin/dscl . -read /Users/root AuthenticationAuthority 2&gt;&amp;1 | /usr/bin/grep -c "No such key")
+		if [[ ${ROOT_USER_CHECK} == "1" ]]; then
+			ROOT_USER_STATUS='&lt;td style="color: green;"&gt;Disabled&lt;/td&gt;'
+		else
+			ROOT_USER_STATUS='&lt;td style="color: red;"&gt;Enabled&lt;/td&gt;'
+		fi
+	#SIP Status
+	SIP_STATUS_CHECK=$(/usr/bin/csrutil status | /usr/bin/awk '{print $5}' | /usr/bin/tr -d '.')
+		if [[ ${SIP_STATUS_CHECK} == "enabled" ]]; then
+			SIP_STATUS='&lt;td style="color: green;"&gt;Enabled&lt;/td&gt;'
+		else
+			SIP_STATUS='&lt;td style="color: red;"&gt;Disabled&lt;/td&gt;'
+		fi
+	#Gatekeeper
+	GATEKEEPER_STATUS_CHECK=$(/usr/sbin/spctl --status | /usr/bin/awk '/assessments/ {print $2}')
+		if [[ ${GATEKEEPER_STATUS_CHECK} == "enabled" ]]; then
+			GATEKEEPER_STATUS='&lt;td style="color: green;"&gt;Enabled&lt;/td&gt;'
+		else
+			GATEKEEPER_STATUS='&lt;td style="color: red;"&gt;Disabled&lt;/td&gt;'
+		fi
+	
+	#FileVault Status
+	FILEVAULT_STATUS_CHECK=$(/usr/bin/fdesetup status | /usr/bin/awk '{print $3}' | /usr/bin/tr -d .)
+		if [[ ${FILEVAULT_STATUS_CHECK} == "On" ]]; then
+			FILEVAULT_STATUS='&lt;td style="color: green;"&gt;Enabled&lt;/td&gt;'
+		else
+			FILEVAULT_STATUS='&lt;td style="color: red;"&gt;Disabled&lt;/td&gt;'
+		fi
+	
+	#MDM FileVault Key Escrow Configuration
+	MDM_PRK_ESCROW_CONFIGURATION_CHECK=$(profiles -P -o  stdout | grep "com.apple.security.FDERecoveryKeyEscrow")
+	if [[ -z $MDM_PRK_ESCROW_CONFIGURATION_CHECK ]]; then
+		MDM_PRK_ESCROW_STATUS='&lt;td style="color: red;"&gt;FileVault key escrow is unmanaged&lt;/td&gt;'
+	else
+		MDM_PRK_ESCROW_STATUS='&lt;td style="color: green;"&gt;FileVault key escrow configuration found&lt;/td&gt;'
+	fi
+	
+	#Active Directory Domain
+	AD_STATUS_CHECK=$(/usr/sbin/dsconfigad -show | /usr/bin/grep 'Active Directory Domain' | /usr/bin/awk '{print $5}')
+		if [[ -z ${AD_STATUS_CHECK} ]];then
+			AD_STATUS='&lt;td style="color: green;"&gt;Not Bound&lt;/td&gt;'
+		else
+			AD_STATUS="&lt;td style=\"color: black\"&gt;${AD_STATUS_CHECK}&lt;/td&gt;"
+		fi
+	
+	#Content Cache report
+	CONTENT_CACHE_CHECK=$(/usr/bin/AssetCacheLocatorUtil 2&gt;&amp;1 | /usr/bin/grep "guid" | /usr/bin/awk '{print$4}' | /usr/bin/sed -e 's/^\(.*\):.*$/\1/' -e 's/^/,/' | /usr/bin/sort -u | /usr/bin/sed 's/,//')
+		if [[ -z ${CONTENT_CACHE_CHECK} ]];then
+			CONTENT_CACHE_STATUS='&lt;td style="color: black;"&gt;None&lt;/td&gt;'
+		else
+			CONTENT_CACHE_STATUS="&lt;td style=\"color: green\"&gt;${CONTENT_CACHE_CHECK}&lt;/td&gt;"
+		fi
+	
+	#Launch Daemons
+	LAUNCH_DAEMONS_STATUS=$(/bin/launchctl list | /usr/bin/grep -v com.apple. | /usr/bin/cut -f3 | /usr/bin/sed 's|$|&lt;br&gt;|g' | /usr/bin/awk NR\&gt;1)
+	
+	#Third-Party System Extensions
+	KEXT_STATUS=$(/usr/sbin/kextstat | /usr/bin/grep -v com.apple | /usr/bin/awk '{print $6}' | /usr/bin/sed 's|$|&lt;br&gt;|g' | /usr/bin/awk NR\&gt;1 )
+	
+	#MDM Gatekeep Configuration
+	MDM_GATEKEEPER_CONFIGURATION_CHECK=$(profiles -P -o stdout | grep "com.apple.systempolicy.control")
+	if [[ -z $MDM_GATEKEEPER_CONFIGURATION_CHECK ]];then
+		MDM_GATEKEEPER_CONFIGURATION_STATUS='&lt;td style="color: red;"&gt;Gatekeeper is unmanaged&lt;/td&gt;'
+	else
+		MDM_GATEKEEPER_CONFIGURATION_STATUS='&lt;td style="color: green;"&gt;A Gatekeeper profile has been found&lt;/td&gt;'
+	fi
+	
+	#Legacy Software Update Servers
+	LEGACY_SWUS_CHECK=$(/usr/bin/defaults read /Library/Preferences/com.apple.SoftwareUpdate.plist CatalogURL)
+	if [[ -z $LEGACY_SWUS_CHECK ]];then
+		LEGACY_SWUS_STATUS='&lt;td style="color: green;"&gt;None&lt;/td&gt;'
+	else
+		LEGACY_SWUS_STATUS="&lt;td style=\"color: red\"&gt;${LEGACY_SWUS_CHECK}&lt;/td&gt;"
+	fi
+	
+	#ADE Enabled
+	ADE_ENROLLED_CHECK=$(profiles status -type enrollment | awk '/Enrolled via DEP:/{print $NF}')
+	if [[ $ADE_ENROLLED_CHECK == "Yes" ]];then
+		ADE_ENROLLED_STATUS='&lt;td style="color: green;"&gt;Automated device enrollment is enabled.&lt;/td&gt;'
+	else
+		ADE_ENROLLED_STATUS='&lt;td style="color: red;"&gt;Automated device enrollment is not enabled&lt;/td&gt;'
+	fi
+	
+	#Enrolled into MDM Check
+	MDM_ENROLLED_CHECK=$(profiles status -type enrollment | awk '/MDM enrollment:/{print $3, $4, $5}')
+	if [[ $MDM_ENROLLED_CHECK == "Yes (User Approved)" ]]; then
+		MDM_ENROLLED_STATUS="&lt;td style=\"color: green\"&gt;$MDM_ENROLLED_CHECK&lt;/td&gt;"
+	else
+		MDM_ENROLLED_STATUS='&lt;td style="color: red;"&gt;No&lt;/td&gt;'
+	fi
+	
+	#MDM Server URL
+	MDM_SERVER_URL=$(profiles status -type enrollment | awk '/MDM server:/{print $NF}' | sed 's|^http[s]://||g' | sed 's/\/.*//')
+	MDM_SERVER_URL="&lt;td style=\"color: black\"&gt;$MDM_SERVER_URL&lt;/td&gt;"
+	
+	#MDM Controlled AutoLogin
+	MDM_LOGIN_CONFIGURATION_CHECK=$(profiles -P -o stdout | grep "com.apple.login.mcx.DisableAutoLoginClient")
+	if [[ -z $MDM_LOGIN_CONFIGURATION_CHECK ]]; then
+		MDM_LOGIN_CONFIGURATION_STATUS='&lt;td style="color: red;"&gt;Automatic login is unmanaged&lt;/td&gt;'
+	else
+		MDM_LOGIN_CONFIGURATION_STATUS='&lt;td style="color: green;"&gt;An automatic login profile has been found&lt;/td&gt;'
+	fi
+	
+	#Bootstrap Token
+	BOOTSTRAP_TOKEN_CHECK=$(profiles status -type bootstraptoken | awk '/Bootstrap Token escrowed to server:/{print $NF}')
+	if [[ $BOOTSTRAP_TOKEN_CHECK == "YES" ]]; then
+		BOOTSTRAP_TOKEN_STATUS='&lt;td style="color: green;"&gt;Bootstrap token escrowed to MDM server&lt;/td&gt;'
+	else
+		BOOTSTRAP_TOKEN_STATUS='&lt;td style="color: red;"&gt;Bootstrap token not escrowed to MDM server&lt;/td&gt;'
+	fi
+	
+	FIREWALL_CHECK=$(/usr/bin/defaults read /Library/Preferences/com.apple.alf globalstate)
+	if [[ $FIREWALL_CHECK == "0" ]]; then
+		FIREWALL_STATUS='&lt;td style="color: red;"&gt;Disabled&lt;/td&gt;'
+	else
+		FIREWALL_STATUS='&lt;td style="color: green;"&gt;Enabled&lt;/td&gt;'
+	fi
+	
+	MDM_FIREWALL_CONFIGURATION_CHECK=$(profiles -P -o stdout | grep "com.apple.security.firewall")
+	if [[ -z $MDM_FIREWALL_CONFIGURATION_CHECK ]]; then
+		MDM_FIREWALL_CONFIGURATION_STATUS='&lt;td style="color: red;"&gt;Firewall is unmanaged&lt;/td&gt;'
+	else
+		MDM_FIREWALL_CONFIGURATION_STATUS='&lt;td style="color: green;"&gt;A Firewall profile has been found&lt;/td&gt;'
+	fi
+	
+	#MDM Guest Profile Configuration
+	MDM_GUEST_CONFIGURATION_CHECK=$(profiles -P -o stdout | grep 'DisableGuestAccount')
+	if [[ -z $MDM_GUEST_CONFIGURATION_CHECK ]]; then
+		MDM_GUEST_CONFIGURATION_STATUS='&lt;td style="color: red;"&gt;Guest accounts are unmanaged&lt;/td&gt;'
+	else
+		MDM_GUEST_CONFIGURATION_STATUS='&lt;td style="color: green;"&gt;A guest profile configuration has been found&lt;/td&gt;'
+	fi
+	
+	#MDM Idle Time Configuration (Screensaver)
+	MDM_SCREENSAVER_IDLE_TIME_CHECK=$(profiles -P -o stdout | grep "loginWindowIdleTime")
+	if [[ -z $MDM_SCREENSAVER_IDLE_TIME_CHECK ]]; then
+		MDM_SCREENSAVER_IDLE_TIME_STATUS='&lt;td style="color: red;"&gt;Screensaver idle time is not managed&lt;/td&gt;'
+	else
+		MDM_SCREENSAVER_IDLE_TIME_STATUS='&lt;td style="color: red;"&gt;A screensaver idle time profile has been found&lt;/td&gt;'
+	fi
+}
+
+
+######################################################
+# WHERE THE MAGIC HAPPENS
+######################################################
+#display status 
+echo "[start] Starting tests"
+echo "[step] Requesting network interface info..."
+
+#used as a variable for populating local network data
+sysProfilerNetworkData=$(/usr/sbin/system_profiler SPNetworkDataType 2&gt; /dev/null)
+
+######################################################
+# WHERE THE FUNCTIONS ARE CALLLED
+######################################################
+#Functions are named as such, calculate 
+#creates the blank HTML File
+CreateEmptyReportFile
+#add in HTML formatting
+GenerateReportHTML
+
+#calculates the proxy settings on the device
+CalculateProxyInfoTableRows
+#adds proxy table with headers and content from previous function to report
+CreateProxyTable
+#get active interface proxy details for network query
+getProxyAddress
+echo "[Info] Reported Proxy Host is ${PROXY_HOST}:${PROXY_PORT}"
+
+#calculate the network connectivity 
+CalculateHostInfoTables
+#inserts the network connectivity information to the report
+createNetworkCheckTable
+#calculate additional check values
+calculateAdditionalChecks
+#Adds additional checks table
+createAdditionalChecksHTML
+#puts the share icon and path at the bottom of the report
+createShareReport
+
+#clean up Proxy File
+/bin/rm ${PROXY_DATA_LOCATION}
+
+#open -a "Safari" "${REPORT_PATH}"
+echo '[Done] Environment Checks Complete'
+echo "[acknowledgement] Host listings provided by Apple, Inc. (Public KB)"
+echo "[acknowledgement] Icon plane by Juan Garces from the Noun Project, licensed under Create Commons (cc)"
+
+#Get the serial number of the mac running this script.
+serialNumber=$(system_profiler SPHardwareDataType | awk '/Serial Number/{print $4}')
+
+#Use the API to get Computer ID
+computerID=$(curl -su "$apiUsername":"$apiPassword" -H "Accept: application/xml" "$apiURL"/JSSResource/computers/serialnumber/"$serialNumber" | xmllint --xpath 'computer/general/id/text()' -)
+
+
+fileToUpload=$(/bin/ls /Users/Shared/ | grep Mac)
+
+# Need to upload ${REPORT_PATH}
+fileToUpload=$(/bin/ls /Users/Shared | grep Mac)
+#command to upload to Jamf Pro Server
+curl -sfku "$apiUsername":"$apiPassword" "$apiURL"/JSSResource/fileuploads/computers/id/$computerID -F name=@/Users/Shared/"$fileToUpload" -X POST
+
+#Check to status of the file upload
+uploadStatus=$?
+
+#Use Jamf Helper to display message to user
+if [ $uploadStatus != 0 ]; then
+	/usr/local/bin/jamf displayMessage -message "The sysdiagnose file FAILED to upload successfully to your computer record on the Jamf Pro Server.  Please contact the IT Department for assistance."
+else
+	/usr/local/bin/jamf displayMessage -message "The sysdiagnose file was uploaded successfully to your computer record on the Jamf Pro Server."
+fi
+
+#Use upload exit status to exit the script with 0 for success or 1 for failure.
+
+if [ $uploadStatus != 0 ]; then
+	exit 1
+else
+	exit 0
+fi </script_contents>
+    <script_contents_encoded>IyEvYmluL2Jhc2gKCiMgQ3JlYXRlIGEgSkVUIHJlcG9ydCBhbmQgdXBsb2FkIHRvIHRoZSBjb21wdXRlcidzIGludmVudG9yeSByZWNvcmQgaW4gSmFtZiBQcm8KCiMgQVBJIENyZWRlbnRpYWxzOgphcGlVc2VybmFtZT0iJDQiCmFwaVBhc3N3b3JkPSIkNSIKYXBpVVJMPSQoZGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uamFtZnNvZnR3YXJlLmphbWYucGxpc3QganNzX3VybCB8IHNlZCBzJy8uJC8vJykKCnJtIC1yZiAvVXNlcnMvU2hhcmVkL01hYyoKCiMgQ3JlYXRpbmcgYSBzY3JpcHQgdG8gY29tYmluZSBKRVQgYW5kIE1FVQojCiMgQ3JlYXRlZCAwOS4xMi4yMDIyIEByb2Jqc2Nocm9lZGVyCgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIFVzaW5nIHRoZSBKRVQgYXMgYSB0ZW1wbGF0ZQoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKCiMgR2V0IENvbXB1dGVyIEluZm9ybWF0aW9uCmNvbXB1dGVyTmFtZT0kKC91c3Ivc2Jpbi9zY3V0aWwgLS1nZXQgQ29tcHV0ZXJOYW1lIHwgL3Vzci9iaW4vc2VkICdzL+KAmS8vJykKY29tcHV0ZXJNb2RlbD0kKC91c3Ivc2Jpbi9zeXNjdGwgLW4gaHcubW9kZWwpCmNvbXB1dGVyU2VyaWFsPSQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUEhhcmR3YXJlRGF0YVR5cGUgfCBhd2sgJy9TZXJpYWwvIHtwcmludCAkTkZ9JykKbWFjT1NWZXJzaW9uPSQoL3Vzci9iaW4vc3dfdmVycyAtcHJvZHVjdFZlcnNpb24pCm1hY09TQnVpbGQ9JChlY2hvICQoL3Vzci9iaW4vYXdrICcvU09GVFdBUkUgTElDRU5TRSBBR1JFRU1FTlQgRk9SIG1hY09TLycgJy9TeXN0ZW0vTGlicmFyeS9Db3JlU2VydmljZXMvU2V0dXAgQXNzaXN0YW50LmFwcC9Db250ZW50cy9SZXNvdXJjZXMvZW4ubHByb2ovT1NYU29mdHdhcmVMaWNlbnNlLnJ0ZicgfCAvdXNyL2Jpbi9hd2sgLUYgJ21hY09TICcgJ3twcmludCAkTkZ9JyB8IC91c3IvYmluL3RyIC1kICdcXCcpIGJ1aWxkICQoL3Vzci9iaW4vc3dfdmVycyAtYnVpbGRWZXJzaW9uKSkKIyBNYWNCb29rIFBybyBjb21wdXRlcnMgd2l0aCBUb3VjaEJhciAoMjAxNiBhbmQgMjAxNykgdGhhdCBjb250YWluIEFwcGxlIFQxIGNoaXAKIyBJbnRlbC1iYXNlZCBNYWMgY29tcHV0ZXJzIHRoYXQgY29udGFpbiB0aGUgQXBwbGUgVDIgQ2hpcAojIEFsbCBTaWxpY29uIE1hY3MKaWYgW1sgJCgvdXNyL2Jpbi9hcmNoKSA9PSAnYXJtNjQnIF1dOyB0aGVuCglzZWN1cmVFbmNsYXZlPSJUcnVlIgplbGlmIFtbICQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUGlCcmlkZ2VEYXRhVHlwZSB8IGF3ayAnL01vZGVsIE5hbWU6LycpID1+ICJUMiIgIF1dOyB0aGVuCglzZWN1cmVFbmNsYXZlPSJUcnVlIgplbGlmIFtbICQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUEhhcmR3YXJlRGF0YVR5cGUgfCBhd2sgJy9Nb2RlbCBJZGVudGlmaWVyL3twcmludCAkM30nKSA9fiBeKE1hY0Jvb2tQcm8xMywyfE1hY0Jvb2tQcm8xMywzfE1hY0Jvb2tQcm8xNCwyfE1hY0Jvb2tQcm8xNCwzKSQgXV07dGhlbgoJc2VjdXJlRW5jbGF2ZT0iVHJ1ZSIKZWxzZQoJc2VjdXJlRW5jbGF2ZT0iRmFsc2UiCmZpCgojIE5ldHdvcmsgSW5mb3JtYXRpb24KYWN0aXZlSW50ZXJmYWNlPSQoL3NiaW4vcm91dGUgZ2V0IGdvb2dsZS5jb20gfCAvdXNyL2Jpbi9ncmVwIGludGVyZmFjZSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQyfScpCmFjdGl2ZVNlcnZpY2U9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1saXN0bmV0d29ya3NlcnZpY2VvcmRlciB8IC91c3IvYmluL2dyZXAgJGFjdGl2ZUludGVyZmFjZSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScgfCAvdXNyL2Jpbi9zZWQgJ3MvLiQvLycpClNTSUQ9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXRhaXJwb3J0bmV0d29yayAkYWN0aXZlSW50ZXJmYWNlIHwgL3Vzci9iaW4vY3V0IC1jIDI0LSkKI2Ruc1NlcnZlcnM9KCQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0ZG5zc2VydmVycyAkYWN0aXZlU2VydmljZSkpCiNzZWFyY2hEb21haW5zPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0c2VhcmNoZG9tYWlucyAkYWN0aXZlU2VydmljZSkKbWFjT1NEZWZhdWx0SG9zdHNGaWxlPSQoY2F0IDw8RU9GCiMjCiMgSG9zdCBEYXRhYmFzZQojCiMgbG9jYWxob3N0IGlzIHVzZWQgdG8gY29uZmlndXJlIHRoZSBsb29wYmFjayBpbnRlcmZhY2UKIyB3aGVuIHRoZSBzeXN0ZW0gaXMgYm9vdGluZy4gIERvIG5vdCBjaGFuZ2UgdGhpcyBlbnRyeS4KIyMKMTI3LjAuMC4xICAgICAgIGxvY2FsaG9zdAoyNTUuMjU1LjI1NS4yNTUgYnJvYWRjYXN0aG9zdAo6OjEgICAgICAgICAgICAgbG9jYWxob3N0CkVPRgopCm1hY09TSG9zdEZpbGU9JChjYXQgL2V0Yy9ob3N0cykKaWYgW1sgJChlY2hvICR7bWFjT1NEZWZhdWx0SG9zdHNGaWxlfSkgPT0gJChlY2hvICR7bWFjT1NIb3N0RmlsZX0pIF1dOyB0aGVuCglob3N0RmlsZU1vZGlmaWVkPSJGYWxzZSIKZWxzZQoJaG9zdEZpbGVNb2RpZmllZD0iVHJ1ZSIKZmkKbG9jYWxJUD0kKGlwY29uZmlnIGdldGlmYWRkciAkYWN0aXZlSW50ZXJmYWNlKQojaWYgW1sgJCgvdXNyL3NiaW4vc2N1dGlsIC0tcHJveHkgfCBncmVwICJIVFRQRW5hYmxlIiB8IGF3ayAne3ByaW50ICRORn0nKSA9PSAiMCIgXV07IHRoZW4KIwlwcm94eUVuYWJsZWQ9IkZhbHNlIgojZWxzZQojCXByb3h5RW5hYmxlZD0iVHJ1ZSIKI2ZpCnB1YmxpY0lQPSQoL3Vzci9iaW4vY3VybCAtcyBpZmNvbmZpZy5tZSB8IC91c3IvYmluL3NlZCAncy8uJC8vJykKcHVibGljRE5TPSQoL3Vzci9iaW4vbnNsb29rdXAgJHB1YmxpY0lQIHwgL3Vzci9iaW4vYXdrICcvbmFtZSA9LycgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkTkZ9JyB8IC91c3IvYmluL3NlZCAncy8uJC8vJykKCkFQUExFX1VSTF9BUlJBWT0oCgkjRGV2aWNlIHNldHVwCgkiYWxiZXJ0LmFwcGxlLmNvbSw0NDMsVENQLERldmljZSBTZXR1cCBIb3N0cyIKCSJjYXB0aXZlLmFwcGxlLmNvbSw4MCxUQ1AiCgkiY2FwdGl2ZS5hcHBsZS5jb20sNDQzLFRDUCIKCSJncy5hcHBsZS5jb20sNDQzLFRDUCIKCSJodW1iLmFwcGxlLmNvbSw0NDMsVENQIgoJInN0YXRpYy5pcHMuYXBwbGUuY29tLDgwLFRDUCIKCSJzdGF0aWMuaXBzLmFwcGxlLmNvbSw0NDMsVENQIgoJInNxLWRldmljZS5hcHBsZS5jb20sNDQzLFRDUCIKCSJ0YnNjLmFwcGxlLmNvbSw0NDMsVENQIgoJInRpbWUtaW9zLmFwcGxlLmNvbSwxMjMsVURQIgoJInRpbWUuYXBwbGUuY29tLDEyMyxVRFAiCgkidGltZS1tYWNvcy5hcHBsZS5jb20sMTIzLFVEUCIKCgkjRGV2aWNlIEFwcGxlIFB1c2ggTm90aWZpY2F0aW9ucwoJIjEtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkLERldmljZSBQdXNoIE5vdGlmaWNhdGlvbiBIb3N0cyIKCSIxLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjItY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjItY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSI0LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI0LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjUtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjUtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiNi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiNi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSI3LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI3LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjgtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjgtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiOS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiOS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIxMC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTAtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTEtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjExLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjEyLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIxMi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIxMy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTMtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTQtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjE0LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjE1LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIxNS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIxNi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTYtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTctY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjE3LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjE4LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIxOC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIxOS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMTktY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMjAtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjIwLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjIxLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIyMS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIJCgkiMjItY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjIyLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjIzLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIyMy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIyNC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMjQtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMjUtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjI1LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjI2LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIyNi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIyNy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMjctY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMjgtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjI4LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjI5LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIyOS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIzMC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzAtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzEtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjMxLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjMyLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIzMi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIzMy1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzMtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzQtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjM0LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjM1LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIzNS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIzNi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzYtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzctY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjM3LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjM4LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSIzOC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSIzOS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiMzktY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDAtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQwLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQxLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI0MS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSI0Mi1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDItY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDMtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQzLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQ0LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI0NC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSI0NS1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDUtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDYtY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQ2LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQ3LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI0Ny1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCSI0OC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDUyMjMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDgtY291cmllci5wdXNoLmFwcGxlLmNvbSw0NDMsVENQIC0gbm9uLXByb3hpZWQiCgkiNDktY291cmllci5wdXNoLmFwcGxlLmNvbSw1MjIzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjQ5LWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNDQzLFRDUCAtIG5vbi1wcm94aWVkIgoJIjUwLWNvdXJpZXIucHVzaC5hcHBsZS5jb20sNTIyMyxUQ1AgLSBub24tcHJveGllZCIKCSI1MC1jb3VyaWVyLnB1c2guYXBwbGUuY29tLDQ0MyxUQ1AgLSBub24tcHJveGllZCIKCgoKCSNPbi1QcmVtIEphbWYgUHJvIFB1c2ggTm90aWZpY2F0aW9uIEhvc3RzCgkiZ2F0ZXdheS5wdXNoLmFwcGxlLmNvbSwyMTk1LFRDUCAtIG5vbi1wcm94aWVkLE9uLVByZW0gSmFtZiBQcm8gQXBwbGUgUHVzaCAtIEJpbmFyeSBQcm90b2NvbCIKCSJmZWVkYmFjay5wdXNoLmFwcGxlLmNvbSwyMTk2LFRDUCAtIG5vbi1wcm94aWVkIgoKCSNPbi1QcmVtIEphbWYgUHJvIFB1c2ggTm90aWZpY2F0aW9uIEhvc3RzIC0gSFRUUC8yIFByb3ZpZGVyIAoJImFwaS5wdXNoLmFwcGxlLmNvbSw0NDMsVENQLE9uLVByZW0gSmFtZiBQcm8gQXBwbGUgUHVzaCAgLSBIVFRQLzIgUHJvdmlkZXIiCgkiYXBpLnB1c2guYXBwbGUuY29tLDIxOTcsVENQIgoJCgkjRGV2aWNlIE1hbmFnZW1lbnQKCSJkZXZpY2VlbnJvbGxtZW50LmFwcGxlLmNvbSw0NDMsVENQLERldmljZSBNYW5hZ2VtZW50IGFuZCBFbnJvbGxtZW50IgoJImRldmljZXNlcnZpY2VzLWV4dGVybmFsLmFwcGxlLmNvbSw0NDMsVENQIgoJImdkbWYuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiaWRlbnRpdHkuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiaXByb2ZpbGVzLmFwcGxlLmNvbSw0NDMsVENQIgoJIm1kbWVucm9sbG1lbnQuYXBwbGUuY29tLDQ0MyxUQ1AiCgkic2V0dXAuaWNsb3VkLmNvbSIsIjQ0MyIsIlRDUCIKCSJ2cHAuaXR1bmVzLmFwcGxlLmNvbSw0NDMsVENQIgoJCgkjQXBwbGUgU2Nob29sIE1hbmFnZXIgYW5kIEFwcGxlIEJ1c2luZXNzIE1hbmFnZXIKCSJzY2hvb2wuYXBwbGUuY29tLDQ0MyxUQ1AsQXBwbGUgU2Nob29sIE1hbmFnZXIgYW5kIEFwcGxlIEJ1c2luZXNzIE1hbmFnZXIiCgkic2Nob29sLmFwcGxlLmNvbSw4MCxUQ1AiCgkid3Muc2Nob29sLmFwcGxlLmNvbSw0NDMsVENQIgoJIndzLWVlLW1haWRzdmMuaWNsb3VkLmNvbSw0NDMsVENQIgoJIndzLWVlLW1haWRzdmMuaWNsb3VkLmNvbSw4MCxUQ1AiCgkiYnVzaW5lc3MuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiYnVzaW5lc3MuYXBwbGUuY29tLDgwLFRDUCIKCSJ3cy5idXNpbmVzcy5hcHBsZS5jb20sNDQzLFRDUCIKCSMiaXN1LmFwcGxlLmNvbSw0NDMsVENQIiBMYXN0IGNoZWNrZWQgTm92ZW1iZXIgMjAyMSB1bnJlYWNoYWJsZQoJIyJpc3UuYXBwbGUuY29tLDgwLFRDUCIgTGFzdCBjaGVja2VkIE5vdmVtYmVyIDIwMjEgdW5yZWFjaGFibGUKCQoJI1NvZnR3YXJlIHVwZGF0ZXMKCSJhcHBsZG5sZC5hcHBsZS5jb20sODAsVENQLFNvZnR3YXJlIFVwZGF0ZXMgSG9zdHMiCgkiY29uZmlndXJhdGlvbi5hcHBsZS5jb20sNDQzLFRDUCIKCSJnZy5hcHBsZS5jb20sODAsVENQIgoJImdnLmFwcGxlLmNvbSw0NDMsVENQIgoJImduZi1tZG4uYXBwbGUuY29tLDQ0MyxUQ1AiCgkiZ25mLW1yLmFwcGxlLmNvbSw0NDMsVENQIgoJImdzLmFwcGxlLmNvbSw4MCxUQ1AiCgkiZ3MuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiaWcuYXBwbGUuY29tLDQ0MyxUQ1AiCgkibWVzdS5hcHBsZS5jb20sODAsVENQIgoJIm1lc3UuYXBwbGUuY29tLDQ0MyxUQ1AiCgkibnMuaXR1bmVzLmFwcGxlLmNvbSw0NDMsVENQIgoJIm9zY2RuLmFwcGxlLmNvbSw4MCxUQ1AiCgkib3NjZG4uYXBwbGUuY29tLDQ0MyxUQ1AiCgkib3NyZWNvdmVyeS5hcHBsZS5jb20sODAsVENQIgoJIm9zcmVjb3ZlcnkuYXBwbGUuY29tLDQ0MyxUQ1AiCgkic2tsLmFwcGxlLmNvbSw0NDMsVENQIgoJInN3Y2RuLmFwcGxlLmNvbSw4MCxUQ1AiCgkic3dkaXN0LmFwcGxlLmNvbSw0NDMsVENQIgoJInN3ZG93bmxvYWQuYXBwbGUuY29tLDgwLFRDUCIKCSJzd2Rvd25sb2FkLmFwcGxlLmNvbSw0NDMsVENQIgoJIyJzd3Bvc3QuYXBwbGUuY29tLDgwLFRDUCIgTGFzdCBjaGVja2VkIE5vdmVtYmVyIDIwMjEgdW5yZWFjaGFibGUKCSJzd3NjYW4uYXBwbGUuY29tLDQ0MyxUQ1AiCgkidXBkYXRlcy1odHRwLmNkbi1hcHBsZS5jb20sODAsVENQIgoJInVwZGF0ZXMuY2RuLWFwcGxlLmNvbSw0NDMsVENQIgoJInhwLmFwcGxlLmNvbSw0NDMsVENQIgoKCSNBcHAgU3RvcmUKCSJpdHVuZXMuYXBwbGUuY29tLDQ0MyxUQ1AsQXBwbGUgQXBwIFN0b3JlIEhvc3RzIgoJIml0dW5lcy5hcHBsZS5jb20sODAsVENQIgoJImFwcHMuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiYXBpLmFwcHMuYXBwbGUuY29tLDQ0MyxUQ1AiCgkicy5tenN0YXRpYy5jb20sNDQzLFRDUCIKCSJhcHBzLm16c3RhdGljLmNvbSw0NDMsVENQIgoJInBwcS5hcHBsZS5jb20sNDQzLFRDUCIKCSJucy5pdHVuZXMuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiaW5pdC5pdHVuZXMuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiYWZmaWxpYXRlLml0dW5lcy5hcHBsZS5jb20sNDQzLFRDUCIKCSJhbmFseXRpY3MuaXR1bmVzLmFwcGxlLmNvbSw0NDMsVENQIgoKCSNDYXJyaWVyIHVwZGF0ZXMKCSJhcHBsZG5sZC5hcHBsZS5jb20uZWRnZXN1aXRlLm5ldCw4MCxUQ1AsQ2FycmllciB1cGRhdGVzIgoJCgkjQ29udGVudCBDYWNoaW5nCgkibGNkbi1yZWdpc3RyYXRpb24uYXBwbGUuY29tLDQ0MyxUQ1AsQ29udGVudCBDYWNoaW5nIgoJInN1Y29uZmlnLmFwcGxlLmNvbSw0NDMsVENQIgoJInhwLWNkbi5hcHBsZS5jb20sNDQzLFRDUCIKCSJsY2RuLWxvY2F0b3IuYXBwbGUuY29tLDQ0MyxUQ1AiCgkic2VydmVyc3RhdHVzLmFwcGxlLmNvbSw0NDMsVENQIgoJCgkjQXBwbGUgRGV2ZWxvcGVyCgkicmVnaXN0ZXIuYXBwYXR0ZXN0LmFwcGxlLmNvbSw0NDMsVENQLEFwcGxlIERldmVsb3BlciIKCSJkYXRhLmFwcGF0dGVzdC5hcHBsZS5jb20sNDQzLFRDUCIKCSJyZWdpc3Rlci1kZXZlbG9wbWVudC5hcHBhdHRlc3QuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiZGF0YS1kZXZlbG9wbWVudC5hcHBhdHRlc3QuYXBwbGUuY29tLDQ0MyxUQ1AiCgkKCSNGZWVkYmFjayBBc3Npc3RhbnQKCSJicGFwaS5hcHBsZS5jb20sNDQzLFRDUCxGZWVkYmFjayBBc3Npc3RhbnQiCgkiY3NzdWJtaXNzaW9ucy5hcHBsZS5jb20sNDQzLFRDUCIKCSJmYmEuYXBwbGUuY29tLDQ0MyxUQ1AiCgkKCSNBcHBsZSBkaWFnbm9zdGljcwoJImRpYWdhc3NldHMuYXBwbGUuY29tLDQ0MyxUQ1AsQXBwbGUgZGlhZ25vc3RpY3MiCgkKCSNETlMgUmVzb2x1dGlvbgoJI2N1cnJlbnRseSB1bmFibGUgdG8gYmUgdmFsaWRhdGVkIGZvciBjZXJ0aWZpY2F0ZXMgZHVlIHRvIG9wZW5zc2wgb24gbWFjT1Mgbm90IHN1cHBvcnRpbmcgVExTIDEuMwoJIyJkb2guZG5zLmFwcGxlLmNvbSw0NDMsVENQLERvbWFpbiBOYW1lIFN5c3RlbSByZXNvbHV0aW9uIgoKCSNDZXJ0aWZpY2F0ZSB2YWxpZGF0aW9uCgkiY2VydHMuYXBwbGUuY29tLDgwLFRDUCxDZXJ0aWZpY2F0ZSBWYWxpZGF0aW9uIEhvc3RpbmciCgkiY2VydHMuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiY3JsLmFwcGxlLmNvbSw4MCxUQ1AiCgkiY3JsLmVudHJ1c3QubmV0LDgwLFRDUCIKCSJjcmwzLmRpZ2ljZXJ0LmNvbSw4MCxUQ1AiCgkiY3JsNC5kaWdpY2VydC5jb20sODAsVENQIgoJIm9jc3AuYXBwbGUuY29tLDgwLFRDUCIKCSJvY3NwLmRpZ2ljZXJ0LmNuLDgwLFRDUCIKCSJvY3NwLmRpZ2ljZXJ0LmNvbSw4MCxUQ1AiCgkib2NzcC5lbnRydXN0Lm5ldCw4MCxUQ1AiCgkib2NzcDIuYXBwbGUuY29tLDQ0MyxUQ1AiCgkidmFsaWQuYXBwbGUuY29tLDQ0MyxUQ1AiCgkKCSNBcHBsZSBJRAoJImFwcGxlaWQuYXBwbGUuY29tLDQ0MyxUQ1AsQXBwbGUgSUQiCgkiYXBwbGVpZC5jZG4tYXBwbGUuY29tLDQ0MyxUQ1AiCgkiaWRtc2EuYXBwbGUuY29tLDQ0MyxUQ1AiCgkiZ3NhLmFwcGxlLmNvbSw0NDMsVENQIgoJCgkjaUNsb3VkCgkiYXBpLmFwcGxlLWNsb3Vka2l0LmNvbSw0NDMsVENQLGlDbG91ZCIKCSJzZXR1cC5hcHBsZS1jbG91ZGtpdC5jb20sNDQzLFRDUCIKCSJjZG4uYXBwbGUtbGl2ZXBob3Rvc2tpdC5jb20sNDQzLFRDUCIKCSJpZG1zYWFwei1tZG4uYXB6b25lcy5jb20sNDQzLFRDUCIKCQoJI0FkZGl0aW9uYWwgQ29udGVudAoJImF1ZGlvY29udGVudGRvd25sb2FkLmFwcGxlLmNvbSw4MCxUQ1AsQWRkaXRpb25hbCBDb250ZW50IgoJImF1ZGlvY29udGVudGRvd25sb2FkLmFwcGxlLmNvbSw0NDMsVENQIgoJImRldmltYWdlcy1jZG4uYXBwbGUuY29tLDgwLFRDUCIKCSJkZXZpbWFnZXMtY2RuLmFwcGxlLmNvbSw0NDMsVENQIgoJImRvd25sb2FkLmRldmVsb3Blci5hcHBsZS5jb20sODAsVENQIgoJImRvd25sb2FkLmRldmVsb3Blci5hcHBsZS5jb20sNDQzLFRDUCIKCSJwbGF5Z3JvdW5kcy1hc3NldHMtY2RuLmFwcGxlLmNvbSw0NDMsVENQIgoJInBsYXlncm91bmRzLWNkbi5hcHBsZS5jb20sNDQzLFRDUCIKCSJzeWx2YW4uYXBwbGUuY29tLDgwLFRDUCIKCSJzeWx2YW4uYXBwbGUuY29tLDQ0MyxUQ1AiCgoJI0phbWYgSG9zdHMKCSJqYW1mLmNvbSw0NDMsVENQLEphbWYgU2VydmljZXMiCgkid3d3LmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJ1c2UxLWpjZHNkb3dubG9hZHMuc2VydmljZXMuamFtZmNsb3VkLmNvbSw0NDMsVENQIgoJInVzZTEtamNkcy5zZXJ2aWNlcy5qYW1mY2xvdWQuY29tLDQ0MyxUQ1AiCgkiZXVjMS1qY2RzZG93bmxvYWRzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJldWMxLWpjZHMuc2VydmljZXMuamFtZmNsb3VkLmNvbSw0NDMsVENQIgoJImV1dzItamNkc2Rvd25sb2Fkcy5zZXJ2aWNlcy5qYW1mY2xvdWQuY29tLDQ0MyxUQ1AiCgkiZXV3Mi1qY2RzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJhcHNlMi1qY2RzZG93bmxvYWRzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJhcHNlMi1qY2RzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJhcG5lMS1qY2RzZG93bmxvYWRzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCSJhcG5lMS1qY2RzLnNlcnZpY2VzLmphbWZjbG91ZC5jb20sNDQzLFRDUCIKCQoJI0phbWYgUHJvdGVjdCBIb3N0cwoJImEzYnd4MjIwa3M1cDF4LWF0cy5pb3QudXMtZWFzdC0xLmFtYXpvbmF3cy5jb20sNDQzLFRDUCxKYW1mIFByb3RlY3QiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSw4ODgzLFRDUCIKCSJzaGFyZWQtamFtZi1qcHQtZ2VuZXJpYy1wYWNrYWdlcy5zMy5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkicHJvZC11c2UxLWphbWYtanB0LWNvbmZpZ3MuczMuYW1hem9uYXdzLmNvbSw0NDMsVENQIgoJImEzYnd4MjIwa3M1cDF4LWF0cy5pb3QuZXUtd2VzdC0yLmFtYXpvbmF3cy5jb20sNDQzLFRDUCIKCSJhM2J3eDIyMGtzNXAxeC1hdHMuaW90LmV1LXdlc3QtMi5hbWF6b25hd3MuY29tLDg4ODMsVENQIgoJInByb2QtZXV3Mi1qYW1mLWpwdC1jb25maWdzLnMzLmFtYXpvbmF3cy5jb20sNDQzLFRDUCIKCSJhM2J3eDIyMGtzNXAxeC1hdHMuaW90LmV1LWNlbnRyYWwtMS5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC5ldS1jZW50cmFsLTEuYW1hem9uYXdzLmNvbSw4ODgzLFRDUCIKCSJwcm9kLWV1YzEtamFtZi1qcHQtY29uZmlncy5zMy5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC5hcC1ub3J0aGVhc3QtMS5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC5hcC1ub3J0aGVhc3QtMS5hbWF6b25hd3MuY29tLDg4ODMsVENQIgoJInByb2QtYXBuZTEtamFtZi1qcHQtY29uZmlncy5zMy5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC5hcC1zb3V0aGVhc3QtMi5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkiYTNid3gyMjBrczVwMXgtYXRzLmlvdC5hcC1zb3V0aGVhc3QtMi5hbWF6b25hd3MuY29tLDg4ODMsVENQIgoJInByb2QtYXBzZTItamFtZi1qcHQtY29uZmlncy5zMy5hbWF6b25hd3MuY29tLDQ0MyxUQ1AiCgkKKQoKTkw9JCdcbicKCiNDb21iaW5lIGRlZmF1bHQgbGlzdCBhbmQgaW1wb3J0ZWQgbGlzdCBpbnRvIDEgQXJyYXkKRlVMTF9BUlJBWT0oKQoKZm9yIExJTkUgaW4gIiR7QVBQTEVfVVJMX0FSUkFZW0BdfSI7IGRvCglGVUxMX0FSUkFZKz0oIiRMSU5FIikKZG9uZQoKCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIyAKIyBGVU5DVElPTlMKIwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCgoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIEZJTEUgRlVOQ1RJT04KIyMjCiMgQ3JlYXRlIGEgZmlsZSBpbnRvIHdoaWNoIHdlIHdpbGwgc2F2ZSB0aGUgUmVwb3J0ICMjIwojZGVmYXVsdCBsb2NhdGlvbiBpcyAvVXNlcnMvU2FocmVkLCB3aXRoIGN1cnJlbnQgdXNlcnMgRGVza3RvcCBhcyBmYWxsYmFjawpmdW5jdGlvbiBDcmVhdGVFbXB0eVJlcG9ydEZpbGUgKCkgewoJZWNobyAiW3N0ZXBdIENyZWF0aW5nIHRoZSByZXBvcnQgZmlsZSAiCglDVVJSRU5UX1VTRVI9JCgvYmluL2xzIC1sIC9kZXYvY29uc29sZSB8IGF3ayAnLyAvIHsgcHJpbnQgJDMgfScpCglVU0VSX0hPTUU9Ii9Vc2Vycy8ke0NVUlJFTlRfVVNFUn0iCglGT0xERVI9Ii9Vc2Vycy9TaGFyZWQiCglpZiBbWyAhIC1kICIke0ZPTERFUn0iIF1dOyB0aGVuCgkJRk9MREVSPSIke1VTRVJfSE9NRX0vRGVza3RvcCIKCQlpZiBbWyAhIC1kICIke0ZPTERFUn0iIF1dOyB0aGVuCgkJCWVjaG8gIltlcnJvcl0gSSB3YXNuJ3QgYWJsZSB0byBsb2NhdGUgdGhlIC9Vc2Vycy9TaGFyZWQgb3IgeW91ciBkZXNrdG9wIGZvbGRlciA6IFwiJHtGT0xERVJ9XCIiCgkJCWV4aXQgMQoJCWZpCglmaQoJUkVQT1JUX0ZJTEVfTkFNRT0iTWFjIEVudmlyb25tZW50IFRlc3QgWyQoL2Jpbi9kYXRlICsiJVktJW0tJWRUJUglTSIpXS5odG1sIgoJUkVQT1JUX1BBVEg9IiR7Rk9MREVSfS8ke1JFUE9SVF9GSUxFX05BTUV9IgoJdG91Y2ggIiR7UkVQT1JUX1BBVEh9IgoJaWYgW1sgISAtZiAiJHtSRVBPUlRfUEFUSH0iIF1dOyB0aGVuCgkJZWNobyAiW2Vycm9yXSBJIHdhc24ndCBhYmxlIHRvIGNyZWF0ZSBhIHJlc3VsdHMgZmlsZSA6IFwiJHtSRVBPUlRfUEFUSH1cIiIKCQlleGl0IDEKCWZpCn0KCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIyBIVE1MIEZPUk1BVFRJTkcgRlVOQ1RJT05TCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKCmZ1bmN0aW9uIEdlbmVyYXRlUmVwb3J0SFRNTCAoKSB7Ci9iaW4vY2F0IDw8IEVPRiA+PiAiJHtSRVBPUlRfUEFUSH0iCjxodG1sPgoJPGhlYWQ+ICAKCQk8c3R5bGUgdHlwZT0idGV4dC9jc3MiPgoJCQlib2R5IHsgYmFja2dyb3VuZC1jb2xvcjojNDQ0NDQ0O2ZvbnQtZmFtaWx5OkhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmO21hcmdpbjoyMHB4OyB9CgkJCWgxIHsgbWFyZ2luLXRvcDoxZW07bWFyZ2luLWJvdHRvbTowLjJlbTtjb2xvcjojOWViOGQ1IH0KCQkJaDIgeyBtYXJnaW4tdG9wOjFlbTttYXJnaW4tYm90dG9tOjAuMmVtO2NvbG9yOiMzN2JiOWEgfQoJCQloMyB7IG1hcmdpbi10b3A6MC44ZW07bWFyZ2luLWJvdHRvbTowLjJlbTtjb2xvcjojZTg1NzNmIH0KCQkJcCB7IG1hcmdpbi10b3A6MC4yZW07bWFyZ2luLWJvdHRvbTowLjJlbTtwYWRkaW5nOiAwIDAgMCAxcHg7Y29sb3I6d2hpdGUgfQoJCQkudGcgICAgeyBib3JkZXItY29sbGFwc2U6Y29sbGFwc2U7Ym9yZGVyLXNwYWNpbmc6MDtib3JkZXItY29sb3I6IzlBQkFEOTt3aWR0aDogOTAwcHg7IH0KCQkJLnRnIHRkIHsgZm9udC1mYW1pbHk6bW9ub3NwYWNlO2ZvbnQtc2l6ZToxNHB4O3BhZGRpbmc6MTBweCAyMHB4O2JvcmRlci1zdHlsZTpzb2xpZDtib3JkZXItd2lkdGg6MHB4O292ZXJmbG93OmhpZGRlbjt3b3JkLWJyZWFrOm5vcm1hbDtib3JkZXItdG9wLXdpZHRoOjFweDtib3JkZXItYm90dG9tLXdpZHRoOjFweDtib3JkZXItY29sb3I6IzlBQkFEOTtjb2xvcjojNDQ0O2JhY2tncm91bmQtY29sb3I6I0VCRjVGRjsgfQoJCQkudGcgdGggeyBmb250LWZhbWlseTpBcmlhbCwgc2Fucy1zZXJpZjtmb250LXNpemU6MTRweDtmb250LXdlaWdodDpub3JtYWw7cGFkZGluZzoxMHB4IDIwcHg7Ym9yZGVyLXN0eWxlOnNvbGlkO2JvcmRlci13aWR0aDowcHg7b3ZlcmZsb3c6aGlkZGVuO3dvcmQtYnJlYWs6bm9ybWFsO2JvcmRlci10b3Atd2lkdGg6MXB4O2JvcmRlci1ib3R0b20td2lkdGg6MXB4O2JvcmRlci1jb2xvcjojOUFCQUQ5O2NvbG9yOiNmZmY7YmFja2dyb3VuZC1jb2xvcjojNDA5Y2ZmOyB9CgkJCS50ZyAudGctMGxheCB7IHRleHQtYWxpZ246bGVmdDt2ZXJ0aWNhbC1hbGlnbjp0b3AgfQoJCQkudGcyICAgIHsgYm9yZGVyLWNvbGxhcHNlOmNvbGxhcHNlO2JvcmRlci1zcGFjaW5nOjA7Ym9yZGVyLWNvbG9yOiM5QUJBRDk7d2lkdGg6IGF1dG87IH0KCQkJLnRnMiB0ZCB7IGZvbnQtZmFtaWx5Om1vbm9zcGFjZTtmb250LXNpemU6MTRweDtwYWRkaW5nOjEwcHggMjBweDtib3JkZXItc3R5bGU6c29saWQ7Ym9yZGVyLXdpZHRoOjBweDtvdmVyZmxvdzpoaWRkZW47d29yZC1icmVhazpub3JtYWw7Ym9yZGVyLXRvcC13aWR0aDoxcHg7Ym9yZGVyLWJvdHRvbS13aWR0aDoxcHg7Ym9yZGVyLWNvbG9yOiM5QUJBRDk7Y29sb3I6IzQ0NDtiYWNrZ3JvdW5kLWNvbG9yOiNFQkY1RkY7dmVydGljYWwtYWxpZ246IHRvcDsgfQoJCQkudGcyIHRoIHsgZm9udC1mYW1pbHk6QXJpYWwsIHNhbnMtc2VyaWY7Zm9udC1zaXplOjE0cHg7Zm9udC13ZWlnaHQ6bm9ybWFsO3BhZGRpbmc6MTBweCAyMHB4O2JvcmRlci1zdHlsZTpzb2xpZDtib3JkZXItd2lkdGg6MHB4O292ZXJmbG93OmhpZGRlbjt3b3JkLWJyZWFrOm5vcm1hbDtib3JkZXItdG9wLXdpZHRoOjFweDtib3JkZXItYm90dG9tLXdpZHRoOjFweDtib3JkZXItY29sb3I6IzlBQkFEOTtjb2xvcjojZmZmO2JhY2tncm91bmQtY29sb3I6IzQwOWNmZjsgfQoJCQkuYm90dG9tLXRhYmxlIHsgbWFyZ2luLXRvcDogMWNtOyBib3JkZXI6IG5vbmU7IGJvcmRlci1zcGFjaW5nOiAyMHB4IDA7fQoJCQlhOmxpbmsgeyBjb2xvcjogd2hpdGU7fQoJCQlhOnZpc2l0ZWQgeyBjb2xvcjogbGlnaHRncmVlbjt9CgkJCWE6aG92ZXIgeyBjb2xvcjogaG90cGluazt9CgkJCWE6YWN0aXZlIHsgY29sb3I6IGJsdWU7fQoJCTwvc3R5bGU+Cgk8L2hlYWQ+CgoJPGJvZHk+CgkJPGgxPkVudmlyb25tZW50IFRlc3RzPC9oMT4KCQk8cD5EYXRlOiAkKC9iaW4vZGF0ZSArIiVhICVkICViICVZICVSIik8L3A+CgoJCQkJPGgyPkNsaWVudCBEZXRhaWxzPC9oMj4KCQk8cD5Db21wdXRlciBOYW1lOiAkKC91c3Ivc2Jpbi9zY3V0aWwgLS1nZXQgQ29tcHV0ZXJOYW1lIHwgL3Vzci9iaW4vc2VkICdzL+KAmS8vJyk8L3A+CgkJPHA+bWFjT1MgTW9kZWw6ICQoL3Vzci9zYmluL3N5c2N0bCAtbiBody5tb2RlbCk8L3A+CgkJPHA+bWFjT1MgVmVyc2lvbjogJCgvdXNyL2Jpbi9zd192ZXJzIC1wcm9kdWN0VmVyc2lvbiksICQoL3Vzci9iaW4vYXdrICcvU09GVFdBUkUgTElDRU5TRSBBR1JFRU1FTlQgRk9SIG1hY09TLycgJy9TeXN0ZW0vTGlicmFyeS9Db3JlU2VydmljZXMvU2V0dXAgQXNzaXN0YW50LmFwcC9Db250ZW50cy9SZXNvdXJjZXMvZW4ubHByb2ovT1NYU29mdHdhcmVMaWNlbnNlLnJ0ZicgfCAvdXNyL2Jpbi9hd2sgLUYgJ21hY09TICcgJ3twcmludCAkTkZ9JyB8IC91c3IvYmluL3RyIC1kICdcXCcpIGJ1aWxkICQoL3Vzci9iaW4vc3dfdmVycyAtYnVpbGRWZXJzaW9uKTwvcD4KCQk8cD5NYWMgU2VyaWFsOiAkY29tcHV0ZXJTZXJpYWw8L3A+CgkJPHA+U2VjdXJlIEVuY2xhdmU6ICRzZWN1cmVFbmNsYXZlPC9wPgoKCQk8aDI+Q2xpZW50IE5ldHdvcmsgRGV0YWlsczwvaDI+CgkJPHA+UHVibGljIElQOiAkcHVibGljSVA8L3A+CgkJPHA+UHVibGljIEROUzogJHB1YmxpY0ROUzwvcD4KCQk8cD5Mb2NhbCBJUDogJGxvY2FsSVA8L3A+CgkJPHA+QWN0aXZlIEludGVyZmFjZTogJGFjdGl2ZUludGVyZmFjZTwvcD4KCQk8cD5BY3RpdmUgU2VydmljZTogJGFjdGl2ZVNlcnZpY2U8L3A+CgkJPHA+U1NJRDogJFNTSUQ8L3A+CgkJPHA+TW9kaWZpZWQgSG9zdHMgRmlsZTogJGhvc3RGaWxlTW9kaWZpZWQ8L3A+CkVPRgp9CgpmdW5jdGlvbiBjcmVhdGVTaGFyZVJlcG9ydCAoKSB7Ci9iaW4vY2F0IDw8IEVPRiA+PiAiJHtSRVBPUlRfUEFUSH0iICAKCQk8dGFibGUgY2xhc3M9ImJvdHRvbS10YWJsZSI+CgkJCTx0cj4KCQkJCTx0ZCBzdHlsZT3igJxwYWRkaW5nLXJpZ2h0OjE1cHg74oCdPgoJCQkJCTxpbWcgc3JjPSJkYXRhOmltYWdlL3BuZztiYXNlNjQsaVZCT1J3MEtHZ29BQUFBTlNVaEVVZ0FBQUNnQUFBQVlDQVlBQUFDSWhML0FBQUFNU1dsRFExQkpRME1nVUhKdlptbHNaUUFBU0ltVlZ3ZFVVOGthbmx0U1NXaUJDRWdKdllraXZVZ0pvVVVRa0NyWUNFa2dvY1NZRUVUc0xNc3F1QlpVUkVCZDBWVVJSZGNDeUZxeGwwV3g5NGNGRldWZExOaFFlWk1DdXU1NTc1MzNuek56di96enovZVh6SjA3QTRCT0xVOHF6VVYxQWNpVDVNdmlJMEpZRTFMVFdLUkhBQUVVb0FzOEFZWEhsMHZaY1hIUkFNcmc4Ky95OWhxMGhuTFpSY24xei9IL0tub0NvWndQQUJJSGNZWkF6cytEZUM4QWVBbGZLc3NIZ09nRDlkWXo4cVZLUEFsaUF4a01FR0twRW1lcGNZa1NaNmh4bGNvbU1aNEQ4WFlBeURRZVQ1WUZnSFlMMUxNSytGbVFSL3NHeEs0U2dWZ0NnQTRaNGtDK2lDZUFPQkxpRVhsNTA1UVkyZ0dIakc5NHN2N0dtVEhFeWVObERXRjFMaW9oaDRybDBsemV6UCt6SFA5YjhuSVZnejdzWUtPSlpKSHh5cHhoM1c3a1RJdFNZaHJFUFpLTW1GaUk5U0YrTHhhbzdDRkdxU0pGWkpMYUhqWGx5em13Wm9BSnNhdUFGeG9Gc1NuRTRaTGNtR2lOUGlOVEhNNkZHSzRRdEZDY3owM1V6RjBvbEljbGFEaHJaZFBpWXdkeHBvekQxc3h0NU1sVWZwWDJ4eFU1U1d3Ti93MlJrRHZJLzZaSWxKaWlqaG1qRm9pVFl5RFdocGdwejBtSVV0dGdOa1VpVHN5Z2pVd1JyNHpmQm1JL29TUWlSTTJQVGNtVWhjZHI3R1Y1OHNGOHNZVWlNVGRHZzZ2elJZbVJHcDd0Zko0cWZpT0lXNFFTZHRJZ2oxQStJWG93RjRFd05FeWRPM1pSS0VuUzVJdDFTdk5ENGpWelgwbHo0elQyT0ZXWUc2SFVXMEZzS2k5STBNekZBL1BoZ2xUejR6SFMvTGhFZFp4NFJqWnZiSnc2SHJ3UVJBTU9DQVVzb0lBdEEwd0QyVURjM3RQY0EzK3BSOElCRDhoQUZoQUNGNDFtY0VhS2FrUUMrd1JRQlA2RVNBamtRL05DVktOQ1VBRDFuNGUwNnQ0RlpLcEdDMVF6Y3NCamlQTkFGTWlGdnhXcVdaSWhiOG5nRWRTSS8rR2REMlBOaFUwNTlrOGRHMnFpTlJyRklDOUxaOUNTR0VZTUpVWVN3NG1PdUFrZWlQdmowYkFQaHMwTjk4RjlCNlA5YWs5NFRPZ2dQQ0JjSlhRU2JrNFZGOHUreTRjRnhvRk82Q0ZjazNQR3R6bmpkcERWRXcvQkF5QS81TWFadUFsd3dUMmdKelllQkgxN1FpMUhFN2t5KysrNS81YkROMVhYMkZGY0tTaGxHQ1dZNHZEOVRHMG5iYzhoRm1WTnY2MlFPdGFNb2JweWhrYSs5OC81cHRJQytJejYzaEpiaU8zQlRtRkhzVFBZQWF3WnNMRERXQXQySGp1b3hFT3I2SkZxRlExNmkxZkZrd041eFAvd3g5UDRWRlpTN3RyZzJ1MzZTVDJXTHl4VTdvK0FNMDA2VXliT0V1V3oySERuRjdLNEV2N0lFU3czVnpkWEFKVGZFZlUyOVpxcCtqNGd6TE5mZGNVRkFBUTREZ3dNSFBpcWkvWUZZQy9jUjZuZFgzVU9jSS9UdGdEZzlFSytRbGFnMXVIS2pnQ29RQWUrVWNiQUhGZ0RCNWlQRy9BQy9pQVloSUd4SUJZa2dsUXdCVlpaQk5lekRNd0FzOEVDVUFyS3dUS3dDbFNEOVdBajJBcDJnTjJnR1J3QVI4RkpjQTVjQkZmQmJiaDZ1c0J6MEF2ZWduNEVRVWdJSFdFZ3hvZ0ZZb3M0STI2SUR4S0loQ0hSU0R5U2lxUWpXWWdFVVNDemtSK1FjcVFDcVVZMklQWEliOGgrNUNoeUJ1bEFiaUwza1c3a0ZmSVJ4VkFhYW9DYW9YYm9LTlFIWmFOUmFDSTZHYzFDcDZORmFBbTZCSzFDNjlEdGFCTjZGRDJIWGtVNzBlZG9Id1l3TFl5SldXSXVtQS9Hd1dLeE5Dd1RrMkZ6c1RLc0VxdkRHckZXK0Q5ZnhqcXhIdXdEVHNRWk9BdDNnU3M0RWsvQytmaDBmQzYrR0svR3QrSk4rSEg4TW40Zjc4Vy9FT2dFVTRJendZL0FKVXdnWkJGbUVFb0psWVROaEgyRUUvQnQ2aUs4SlJLSlRLSTkwUnUramFuRWJPSXM0bUxpV3VKTzRoRmlCL0Voc1k5RUlobVRuRWtCcEZnU2o1UlBLaVd0SVcwbkhTWmRJbldSM3BPMXlCWmtOM0k0T1kwc0lSZVRLOG5ieUlmSWw4aFB5UDBVWFlvdHhZOFNTeEZRWmxLV1VqWlJXaWtYS0YyVWZxb2UxWjRhUUUya1psTVhVS3VvamRRVDFEdlUxMXBhV2xaYXZscmp0Y1JhODdXcXRIWnBuZGE2ci9XQnBrOXpvbkZvazJnSzJoTGFGdG9SMmszYWF6cWRia2NQcHFmUjgrbEw2UFgwWS9SNzlQZmFETzJSMmx4dGdmWTg3UnJ0SnUxTDJpOTBLRHEyT215ZEtUcEZPcFU2ZTNRdTZQVG9VblR0ZERtNlBOMjV1alc2KzNXdjYvYnBNZlJHNjhYcTVla3QxdHVtZDBidnFUNUozMDQvVEYrZ1g2Sy9VZitZL2tNR3hyQm1jQmg4eGcrTVRZd1RqQzREb29HOUFkY2cyNkRjWUlkQnUwR3ZvYjZoaDJHeVlhRmhqZUZCdzA0bXhyUmpjcG01ektYTTNjeHJ6SS9EeklheGh3bUhMUnJXT096U3NIZEd3NDJDallSR1pVWTdqYTRhZlRSbUdZY1o1eGd2TjI0MnZtdUNtemlaakRlWlliTE81SVJKejNDRDRmN0QrY1BMaHU4ZWZzc1VOWFV5alRlZFpiclI5THhwbjVtNVdZU1oxR3lOMlRHekhuT21lYkI1dHZsSzgwUG0zUllNaTBBTHNjVktpOE1XejFpR0xEWXJsMVhGT3M3cXRUUzFqTFJVV0c2d2JMZnN0N0szU3JJcXR0cHBkZGVhYXUxam5XbTkwcnJOdXRmR3dtYWN6V3liQnB0YnRoUmJIMXVSN1dyYlU3YnY3T3p0VXV4K3NtdTJlMnB2Wk0rMUw3SnZzTC9qUUhjSWNwanVVT2R3eFpIbzZPT1k0N2pXOGFJVDZ1VHBKSEtxY2JyZ2pEcDdPWXVkMXpwM2pDQ004QjBoR1ZFMzRyb0x6WVh0VXVEUzRISi9KSE5rOU1qaWtjMGpYNHl5R1pVMmF2bW9VNk8rdUhxNjVycHVjcjA5V24vMDJOSEZvMXRIdjNKemN1TzcxYmhkY2FlN2g3dlBjMjl4ZituaDdDSDBXT2R4dzVQaE9jN3pKODgyejg5ZTNsNHlyMGF2Ym04YjczVHZXdS9yUGdZK2NUNkxmVTc3RW54RGZPZjVIdkQ5NE9mbGwrKzMyKzh2ZnhmL0hQOXQvay9IMkk4Ump0azA1bUdBVlFBdllFTkFaeUFyTUQzd2w4RE9JTXNnWGxCZDBJTmc2MkJCOE9iZ0oyeEhkalo3Ty90RmlHdUlMR1JmeUR1T0gyY081MGdvRmhvUldoYmFIcVlmbGhSV0hYWXYzQ284Szd3aHZEZkNNMkpXeEpGSVFtUlU1UExJNjF3ekxwOWJ6KzBkNnoxMnp0ampVYlNvaEtqcXFBZlJUdEd5Nk5aeDZMaXg0MWFNdXhOakd5T0phWTRGc2R6WUZiRjM0K3pqcHNmOVBwNDRQbTU4emZqSDhhUGpaOGVmU21Ba1RFM1lsdkEyTVNSeGFlTHRKSWNrUlZKYnNrN3lwT1Q2NUhjcG9Ta1ZLWjBUUmsyWU0rRmNxa21xT0xVbGpaU1duTFk1clc5aTJNUlZFN3NtZVU0cW5YUnRzdjNrd3NsbnBwaE15WjF5Y0tyT1ZON1VQZW1FOUpUMGJlbWZlTEc4T2w1ZkJqZWpOcU9YeitHdjVqOFhCQXRXQ3JxRkFjSUs0WlBNZ015S3pLZFpBVmtyc3JwRlFhSktVWStZSTY0V3Y4eU96RjZmL1M0bk5tZEx6a0J1U3U3T1BISmVldDUraWI0a1IzSjhtdm0wd21rZFVtZHBxYlJ6dXQvMFZkTjdaVkd5elhKRVBsbmVrbThBRCt6bkZRNktIeFgzQ3dJTGFncmV6MGllc2FkUXIxQlNlSDZtMDh4Rk01OFVoUmY5T2d1ZnhaL1ZOdHR5OW9MWjkrZXc1MnlZaTh6Tm1OczJ6M3BleWJ5dStSSHp0eTZnTHNoWjhFZXhhM0ZGOFpzZlVuNW9MVEVybVYveThNZUlIeHRLdFV0bHBkZC84djlwL1VKOG9YaGgreUwzUldzV2ZTa1RsSjB0ZHkydkxQKzBtTC80N00ramY2NzZlV0JKNXBMMnBWNUwxeTBqTHBNc3U3WThhUG5XQ3IyS29vcUhLOGF0YUZySldsbTI4czJxcWF2T1ZIcFVybDlOWGExWTNWa1ZYZFd5eG1iTnNqV2Zxa1hWVjJ0Q2FuYldtdFl1cW4yM1ZyRDIwcnJnZFkzcnpkYVhyLy80aS9pWEd4c2lOalRWMmRWVmJpUnVMTmo0ZUZQeXBsTy8rdnhhdjlsa2Mvbm16MXNrV3pxM3htODlYdTlkWDcvTmROdlNCclJCMGRDOWZkTDJpenRDZDdRMHVqUnUyTW5jV2I0TDdGTHNldlpiK20vWGRrZnRidHZqczZkeHIrM2UybjJNZldWTlNOUE1wdDVtVVhOblMycEx4LzZ4Kzl0YS9WdjMvVDd5OXkwSExBL1VIRFE4dVBRUTlWREpvWUhEUllmN2praVA5QnpOT3Zxd2JXcmI3V01UamwwNVB2NTQrNG1vRTZkUGhwODhkb3A5NnZEcGdOTUh6dmlkMlgvVzUyenpPYTl6VGVjOXorLzd3L09QZmUxZTdVMFh2QyswWFBTOTJOb3hwdVBRcGFCTFJ5K0hYajU1aFh2bDNOV1lxeDNYa3E3ZHVEN3BldWNOd1kybk4zTnZ2cnhWY0t2Lzl2dzdoRHRsZDNYdlZ0NHp2VmYzTDhkLzdlejA2ang0UC9UKytRY0pEMjQvNUQ5OC9rais2Rk5YeVdQNjQ4b25Gay9xbjdvOVBkQWQzbjN4MmNSblhjK2x6L3Q3U3YvVSs3UDJoY09Mdlg4Ri8zVytkMEp2MTB2Wnk0RlhpMThidjk3eXh1Tk5XMTljMzcyM2VXLzczNVc5TjM2LzlZUFBoMU1mVXo0KzZaL3hpZlNwNnJQajU5WXZVVi91RE9RTkRFaDVNcDdxS0lEQmhtWm1BdkJxQ3dEMFZBQVlGK0g1WWFMNm5xY1NSSDAzVlNId243RDZMcWdTTHdBYTRVTjVYT2NjQVdBWGJIYXcwWU1CVUI3VkU0TUI2dTQrMURRaXozUjNVM1BSNEkySDhINWc0TFVaQUtSV0FEN0xCZ2I2MXc0TWZONEVnNzBKd0pIcDZ2dWxVb2p3YnZDTGh4SmRZaGJPQjkvSnZ3R3RlWDZ4akxkM2NBQUFBQWx3U0ZsekFBQVdKUUFBRmlVQlNWSWs4QUFBQWdOcFZGaDBXRTFNT21OdmJTNWhaRzlpWlM1NGJYQUFBQUFBQUR4NE9uaHRjRzFsZEdFZ2VHMXNibk02ZUQwaVlXUnZZbVU2Ym5NNmJXVjBZUzhpSUhnNmVHMXdkR3M5SWxoTlVDQkRiM0psSURVdU5DNHdJajRLSUNBZ1BISmtaanBTUkVZZ2VHMXNibk02Y21SbVBTSm9kSFJ3T2k4dmQzZDNMbmN6TG05eVp5OHhPVGs1THpBeUx6SXlMWEprWmkxemVXNTBZWGd0Ym5NaklqNEtJQ0FnSUNBZ1BISmtaanBFWlhOamNtbHdkR2x2YmlCeVpHWTZZV0p2ZFhROUlpSUtJQ0FnSUNBZ0lDQWdJQ0FnZUcxc2JuTTZaWGhwWmowaWFIUjBjRG92TDI1ekxtRmtiMkpsTG1OdmJTOWxlR2xtTHpFdU1DOGlDaUFnSUNBZ0lDQWdJQ0FnSUhodGJHNXpPblJwWm1ZOUltaDBkSEE2THk5dWN5NWhaRzlpWlM1amIyMHZkR2xtWmk4eExqQXZJajRLSUNBZ0lDQWdJQ0FnUEdWNGFXWTZVR2w0Wld4WlJHbHRaVzV6YVc5dVBqazRQQzlsZUdsbU9sQnBlR1ZzV1VScGJXVnVjMmx2Ymo0S0lDQWdJQ0FnSUNBZ1BHVjRhV1k2VUdsNFpXeFlSR2x0Wlc1emFXOXVQakV4T0R3dlpYaHBaanBRYVhobGJGaEVhVzFsYm5OcGIyNCtDaUFnSUNBZ0lDQWdJRHgwYVdabU9rOXlhV1Z1ZEdGMGFXOXVQakU4TDNScFptWTZUM0pwWlc1MFlYUnBiMjQrQ2lBZ0lDQWdJRHd2Y21SbU9rUmxjMk55YVhCMGFXOXVQZ29nSUNBOEwzSmtaanBTUkVZK0Nqd3ZlRHA0YlhCdFpYUmhQZ3FNa0syVUFBQUdSRWxFUVZSSURXMVhTNHNjVlJRKzllcnVtYzRNVG1ZY1p5TEVFVFdKRUNlR0VBbERvdEZFalZGSUpFZ1FGUEVYWkNXQ0swVVhnb0prRVZlNk11QTJFaE1DUW95TFlLSklGcUlMWHhBWU5DYlQ4K2llNmxkMVYvbDk1OTViWFQzbURuM3IzUFA0em5mdXEybzhRWHZyL1ROSFJpcVZjOVZxdFJ5RlVRYVZKOExIY0xPR1lhVlhjRWVVWlArUFV5aTFEVkE1SERURUdIdVc5Qkl2anVOT3E5azYvdEc3cHk1NXA5NzUrUG1wNmVrTG51OEhuWFk3UmZQVm1kR09VV2JSSFdMT0lYZlFCTDV2UXZ2OTFDUWtBR1B6SWpET29heWcyRFlaVkw3bnBlVkt4VS9UZm45bGVlbG9HSlhMNS9wcEduVGJyUlFKZk05bm9NWHhJV2lDQXU3QUNna09tREVQVHc5aUkyNXFVV1BWRVVsVjcwbm1NSWdKYUsxTlU1ZzhDZ2NFRDNsb3l4RFJiRGJUVXFrVStINzRsUjlGVWFYZlMxSXdJMVRlRkVpWHk0YmxGZ3JRcVJvZDh2aUJKN1dWZFRuKzByTnk0dGh6VWx1TkJlanFZam9UekZJR2pRQm8rZ0F0bldXajQwVDFzUXhScVZ3Si9jRFB3TU9Rczg0bXNnaG1OQWF0cU04azlFTlpXcTNMb2FmMnlaTjdkcWhqcmRhUWI3NjlLbE1UWTlMcjl5MkxZaHhsUzVBUnVVakIrR1ZwQnBwQmhpWEh4Sk05OUtqRE9qaXdJcEJENGRQOFVKd3NyelZrOTg1SDVQRCt4NlhlaUdXMXZpN1BMTXpMbnZudHNLM3JUTHFrQXlZT3k1S3hlQUJXYk1NRHN3WnVvYTRpTndjYm5ocGFqTTgzc1RxZ004WUE1Skp1VHg2YW01VTNUaDZWUzVkL2xLMnpFM1NTbTM4dnkyc25qMGc5WHBkYi85WWtpa0xSZzVNdnNVdmdGcDE1blU0aGRPc3pGNWFXQnZ6STFJcEdNR3Jyam9lYlZVcWV0RHRkV2J5OWdvRXZWNjcvS3A5ODhiV01sQ1A5blQ1N1FiNkRqZ1V2M2w2VmRqZlJBMkx5RkhBMXJjczl3QzllVmFFU0lMRmhBZUFNZEhvK3pZQXdDZmJWMXZ0bjVORENidWxpRmp1TlpUazQveUQyVzZwbEhKaWZrOWJha3N6TlRzbTJCMmJsajV1M1pQR2YyeEtGUERoRG9GcUVJYlFobnk2dGlDR29QTXp5MmtYV0dGY1RJWjJjSWdHWDkvVVRSMlMwVXBKbXF5V2JxbFhkZXpoNWl2UXdTQjA5ZkFEWFRpelYwUkZaYUhYa3d6Tm5nVmxFTXFDcTRSYXpoQWpBaFRmNWNBaFpVQVlIanc1MkQ5TG9DRGxJOTB4eEI1ZEx2aTdsNTErZWwrcy8veTZUNDFWWnZMTW1lM2M5U253NWYrV0czUGpsTDZuVlk5azN2MDNlZlBWRktZZUJMbldBZTlid0pDS2JuWklDU1dyYzdnejFEQ0JDQ2RpbkNUUzlJOHA0YzlqaEM1SXB1Z2ozMzhTbUVSbkhyN3k2cmhpc3Yxd0tWSmVtbUczc2NyeWQ4SE9FaUFzNUgrYUNtWlhjWkFSZFlpWjNUZTlMTnlnK1hTQXFvcnZyK2NiQW5XWG53U1hMOUUzQ0l1anNmSGswZGZhS3VKQVpwUlEwUEI5QmlTVXVjQnYyZExrSU5sUUIzR3lRZ1RJRExuM2dCL1RXR2FiV0t4NDB5TG9LTkpDbzBpb2lPR0lXbkVCbzVoNDBzdW5oeDRxVkJHTUlaTXRXZldGTUcxMTRlbWNteCtYaTVlOFY0ejdJdlY0ZllZVmt1bjFRUlJiWUtMbzZPOGd6RGRHMEFJWFJybkNLQjBvbTFjeXFjaUJPcGRiY21hQmM1aWdLY0VFdnFiNVNpa3hOUTY3RWNUT1hoK2RDUGlGRE1Yck5VRE5NMjFBeU91TnY3VndqUlRJZWVCVkpLUWh4V0h5UUZCa2J4ZXpRQlFQYVFwREc5MUZPUW8xODYrdUtPSDBoZjFGbG8wSis1dGo1TlNvTUdjLzlvempRcXN3bnNmaER4Ny9WUmxOK1c3d2pVK09qZ2s4Mkdvd2RqZ0hlTU11d2I1bmVyTDVxMEhXOEN3dDREQnFUMnhGRWU4MDRqVTFBeUEweEdxSU1rWW9IQWpQMzhnc0haZi9lblhoRDREb2RDbUJSbmlTOW5reFBUYW92NFRRTHVzSGVkSHZQMkl3UHR3R2I2VU5TQWRhQW9VTXk5b0lyZ1htdmVkTHNKSEw1NmsveTJQWTUyVEp6ci9vTWxlM2c0TTh2SHZvMjIxMnBsRmdJUFYwU2hOck1yajZ1akd2UVpkN2JIM3lhaFdHSWZZNXYzd0ZONndObjNYTXVCRStMM1loYlVtOTJWTUV3aFhYWVVDaVVEUjhmTFF1L3NxMFhub1ZtOGRSR2YydkNwS1ZKcisrSHpXYmNudGc4V1VtU2Jvcjk2QnYvNGQ2TUxBMUVzc3A3eHFveWdWZmMzVnVlQm1hZWNyeE43SHZhK1J0TU84S0FWejJSYlpaK0ZKV0N0YldsOVRCdXhjZEcycU1YSzVWSzBFc1M3blFsNldweHFRWlRielQ5RlBmY2htd0tyc3JjNGp4c1lwdmVSdVowYUVXSW5sZk1IUDZ6RE5xdFZpM3BkSjhPYmx5Nzh1ZU9YVS84Z0UvelY3RHhJL3hyb240NThrYUJ1Wm1IVFdWMG1OVzhxVmdZRi8ySG5mS1JDZ2poa2VuMWVuNmpVWmUxbFpWam41MSs3OXAvWGNEbzJzMHA3OEVBQUFBQVNVVk9SSzVDWUlJPSIgLz4KCQkJCTwvdGQ+CgkJCQk8dGQgc3R5bGU9Y29sb3I6d2hpdGU7ID4KCQkJCQlXYW50IHRvIHNoYXJlIHRoaXMgcmVwb3J0PyBVc2UgdGhlIHNoYXJlIGJ1dHRvbiBpbiB0aGUgdXBwZXItcmlnaHQgY29ybmVyIG9mIHlvdXIgU2FmYXJpIHdpbmRvdyBvciBlbWFpbCB0aGUgc2F2ZWQgZmlsZSAoJHtSRVBPUlRfUEFUSH0iKS4KCQkJCTwvdGQ+CgkJCTwvdHI+CgkJPC90YWJsZT4KCTwvYm9keT4KPC9odG1sPgpFT0YKfQojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgUFJPWFkgSU5GTyBGVU5DVElPTlMKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwoKZnVuY3Rpb24gQ3JlYXRlUHJveHlUYWJsZSAoKSB7CgkKCi9iaW4vY2F0IDw8IEVPRiA+PiAiJHtSRVBPUlRfUEFUSH0iICAKCQk8aDI+UHJveHkgU2V0dGluZ3M8L2gyPgoJCTx0YWJsZSBjbGFzcz0idGciPgoJCQk8dHI+CgkJCQk8dGg+SW50ZXJmYWNlPC90aD4KCQkJCTx0aD5BdXRvIFByb3h5IERpc2NvdmVyeTwvdGg+CgkJCQk8dGg+QXV0byBQcm94eSBDb25maWc8L3RoPgoJCQkJPHRoPldlYiBQcm94eTwvdGg+CgkJCQk8dGg+U2VjdXJlIFdlYiBQcm94eTwvdGg+CgkJCQk8dGg+RlRQIFByb3h5PC90aD4KCQkJCTx0aD5Tb2NrcyBQcm94eTwvdGg+CgkJCQk8dGg+U3RyZWFtaW5nIFByb3h5PC90aD4KCQkJCTx0aD5Hb3BoZXIgUHJveHk8L3RoPgoJCQkJPHRoPlByb3h5IEJ5cGFzcyBEb21haW5zPC90aD4KCQkJCTx0aD5TdGF0aWMgRE5TIFNlcnZlcnM8L3RoPgoJCQkJPHRoPlN0YXRpYyBTZWFyY2ggRG9tYWluczwvdGg+CgkJCTwvdHI+CgkJCSR7UFJPWFlfSU5GT19UQUJMRV9ST1dTfQoJCTwvdGFibGU+CkVPRgp9CgojIyMjIExvY2FsIG1hY09TIEFkZGl0aW9uYWwgTmV0d29yayBpbmZvcm1hdGlvbiAjIyMKZnVuY3Rpb24gQ2FsY3VsYXRlUHJveHlJbmZvVGFibGVSb3dzICgpIHsKCgllY2hvICJbc3RlcF0gR2V0dGluZyBwcm94eSBjb25maWcgaW5mby4uLiIKCVBST1hZX0lORk9fVEFCTEVfUk9XUz0nJwoKCSNCdWlsZCBBcnJheSBvZiBuZXR3b3JrIGludGVyZmFjZXMsIHJlcGxhY2luZyBhICIgIiB3aXRoICJfIiBpdCB3aWxsIGJlIHJlbW92ZWQgZHVyaW5nIHRoZSBMb29wCglBTExfSU5URVJGQUNFX05BTUVTPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtbGlzdGFsbG5ldHdvcmtzZXJ2aWNlcyB8IC91c3IvYmluL3RhaWwgLW4gKzIgfCBzZWQgLWUgJ3MvIC9fL2cnKQoJCglmb3IgSU5URVJGQUNFX05BTUUgaW4gJHtBTExfSU5URVJGQUNFX05BTUVTfTsKCWRvCgkJSU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRT0kKGVjaG8gJHtJTlRFUkZBQ0VfTkFNRX0gfCBzZWQgLWUgJ3MvXy8gL2cnKSAjIFJlcGxhY2UgXyB3aXRoIGEgc3BhY2UgZm9yIHJlYWRhYmlsaXR5CgkJZWNobyAiICA+IENoZWNraW5nIHByb3h5IG9uICR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iCgkJQVVUT19QUk9YWT0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHByb3h5YXV0b2Rpc2NvdmVyeSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIpCgkJQVVUT19QUk9YWV9VUkw9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXRhdXRvcHJveHl1cmwgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iKQoJCVdFQl9QUk9YWT0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHdlYnByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IikKCQlTRUNVUkVfV0VCX1BST1hZPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0c2VjdXJld2VicHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iKQoJCUZUUF9QUk9YWT0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldGZ0cHByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IikKCQlTT0NLU19QUk9YWT0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHNvY2tzZmlyZXdhbGxwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIpCgkJU1RSRUFNSU5HX1BST1hZPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0c3RyZWFtaW5ncHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iKQoJCUdPUEhFUl9QUk9YWT0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldGdvcGhlcnByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IikKCQlQUk9YWV9CWVBBU1NfRE9NQUlOUz0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHByb3h5YnlwYXNzZG9tYWlucyAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIpCgkJUFJPWFlfQllQQVNTX0RPTUFJTlM9IiR7UFJPWFlfQllQQVNTX0RPTUFJTlMvLyQnXG4nLzxiciAvPn0iICAjIERvbWFpbiBsaXN0cyBjYW4gaGF2ZSBuZXdsaW5lcy4uLiBjb252ZXJ0IHRvIGh0bWwgPGJyPgoJCUROU19TRVJWRVJTPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0ZG5zc2VydmVycyAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIpCgkJU0VBUkNIX0RPTUFJTlM9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXRzZWFyY2hkb21haW5zICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IikKCgoJCWlmIFtbICR7QVVUT19QUk9YWX0gPT0gKiJBdXRvIFByb3h5IERpc2NvdmVyeTogT2ZmIiogXV07IHRoZW4KCQkJQVVUT19QUk9YWV9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+T2ZmPC90ZD4nCgkJCWVsc2UKCQkJQVVUT19QUk9YWV9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPk9uPC90ZD4nCgkJZmkKCQlpZiBbWyAke0FVVE9fUFJPWFlfVVJMfSA9PSAqIkVuYWJsZWQ6IE5vIiogXV07IHRoZW4KCQkJQVVUT19QUk9YWV9VUkxfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCUFVVE9fUFJPWFlfVVJMX1NUQVRVUz0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldGF1dG9wcm94eXVybCAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0xJyB8IGF3ayAne3ByaW50ICQyfScpCgkJCUFVVE9fUFJPWFlfVVJMX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7QVVUT19QUk9YWV9VUkxfU1RBVFVTfTwvdGQ+IgoJCWZpCgkJaWYgW1sgJHtXRUJfUFJPWFl9ID09ICoiRW5hYmxlZDogTm8iKiBdXTsgdGhlbgoJCQlXRUJfUFJPWFlfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCVdFQl9QUk9YWV9VUkw9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXR3ZWJwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0yJ3wgYXdrICd7cHJpbnQgJDJ9JykKCQkJV0VCX1BST1hZX1BPUlQ9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXR3ZWJwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0zJ3wgYXdrICd7cHJpbnQgJDJ9JykKCQkJV0VCX1BST1hZX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7V0VCX1BST1hZX1VSTH06JHtXRUJfUFJPWFlfUE9SVH08L3RkPiIKCQlmaQoJCWlmIFtbICR7U0VDVVJFX1dFQl9QUk9YWX0gPT0gKiJFbmFibGVkOiBObyIqIF1dOyB0aGVuCgkJCVNFQ1VSRV9XRUJfUFJPWFlfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCVNFQ1VSRV9XRUJfUFJPWFlfVVJMPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0d2VicHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iIHwgYXdrICdOUj09Mid8IGF3ayAne3ByaW50ICQyfScpCgkJCVNFQ1VSRV9XRUJfUFJPWFlfUE9SVD0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHdlYnByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IiB8IGF3ayAnTlI9PTMnfCBhd2sgJ3twcmludCAkMn0nKQoJCQlTRUNVUkVfV0VCX1BST1hZX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7U0VDVVJFX1dFQl9QUk9YWV9VUkx9OiR7U0VDVVJFX1dFQl9QUk9YWV9QT1JUfTwvdGQ+IgoJCWZpCgkJaWYgW1sgJHtGVFBfUFJPWFl9ID09ICoiRW5hYmxlZDogTm8iKiBdXTsgdGhlbgoJCQlGVFBfUFJPWFlfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCUZUUF9QUk9YWV9VUkw9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXR3ZWJwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0yJ3wgYXdrICd7cHJpbnQgJDJ9JykKCQkJRlRQX1BST1hZX1BPUlQ9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXR3ZWJwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0zJ3wgYXdrICd7cHJpbnQgJDJ9JykKCQkJRlRQX1BST1hZX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7RlRQX1BST1hZX1VSTH06JHtGVFBfUFJPWFlfUE9SVH08L3RkPiIKCQlmaQoJCWlmIFtbICR7U09DS1NfUFJPWFl9ID09ICoiRW5hYmxlZDogTm8iKiBdXTsgdGhlbgoJCQlTT0NLU19QUk9YWV9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+T2ZmPC90ZD4nCgkJCWVsc2UKCQkJU09DS1NfUFJPWFlfVVJMPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0d2VicHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iIHwgYXdrICdOUj09Mid8IGF3ayAne3ByaW50ICQyfScpCgkJCVNPQ0tTX1BST1hZX1BPUlQ9JCgvdXNyL3NiaW4vbmV0d29ya3NldHVwIC1nZXR3ZWJwcm94eSAiJHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSIgfCBhd2sgJ05SPT0zJ3wgYXdrICd7cHJpbnQgJDJ9JykKCQkJU09DS1NfUFJPWFlfU1RBVFVTPSI8dGQgc3R5bGU9XCJjb2xvcjogcmVkXCI+JHtTT0NLU19QUk9YWV9VUkx9OiR7U09DS1NfUFJPWFlfUE9SVH08L3RkPiIKCQlmaQoJCWlmIFtbICR7U1RSRUFNSU5HX1BST1hZfSA9PSAqIkVuYWJsZWQ6IE5vIiogXV07IHRoZW4KCQkJU1RSRUFNSU5HX1BST1hZX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5PZmY8L3RkPicKCQkJZWxzZQoJCQlTVFJFQU1JTkdfUFJPWFlfVVJMPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0d2VicHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iIHwgYXdrICdOUj09Mid8IGF3ayAne3ByaW50ICQyfScpCgkJCVNUUkVBTUlOR19QUk9YWV9QT1JUPSQoL3Vzci9zYmluL25ldHdvcmtzZXR1cCAtZ2V0d2VicHJveHkgIiR7SU5URVJGQUNFX05BTUVfTk9fVU5ERVJTQ09SRX0iIHwgYXdrICdOUj09Myd8IGF3ayAne3ByaW50ICQyfScpCgkJCVNUUkVBTUlOR19QUk9YWV9TVEFUVVM9Ijx0ZCBzdHlsZT1cImNvbG9yOiByZWRcIj4ke1NUUkVBTUlOR19QUk9YWV9VUkx9OiR7U1RSRUFNSU5HX1BST1hZX1BPUlR9PC90ZD4iCgkJZmkKCQlpZiBbWyAke0dPUEhFUl9QUk9YWX0gPT0gKiJFbmFibGVkOiBObyIqIF1dOyB0aGVuCgkJCUdPUEhFUl9QUk9YWV9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+T2ZmPC90ZD4nCgkJCWVsc2UKCQkJR09QSEVSX1BST1hZX1VSTD0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHdlYnByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IiB8IGF3ayAnTlI9PTInfCBhd2sgJ3twcmludCAkMn0nKQoJCQlHT1BIRVJfUFJPWFlfUE9SVD0kKC91c3Ivc2Jpbi9uZXR3b3Jrc2V0dXAgLWdldHdlYnByb3h5ICIke0lOVEVSRkFDRV9OQU1FX05PX1VOREVSU0NPUkV9IiB8IGF3ayAnTlI9PTMnfCBhd2sgJ3twcmludCAkMn0nKQoJCQlHT1BIRVJfUFJPWFlfU1RBVFVTPSI8dGQgc3R5bGU9XCJjb2xvcjogcmVkXCI+JHtHT1BIRVJfUFJPWFlfVVJMfToke0dPUEhFUl9QUk9YWV9QT1JUfTwvdGQ+IgoJCWZpCgkJaWYgW1sgJHtQUk9YWV9CWVBBU1NfRE9NQUlOU30gPT0gKiJUaGVyZSBhcmVuJ3QgYW55IGJ5cGFzcyBkb21haW5zIHNldCIqIF1dOyB0aGVuCgkJCVBST1hZX0JZUEFTU19ET01BSU5TX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5PZmY8L3RkPicKCQkJZWxzZQoJCQlQUk9YWV9CWVBBU1NfRE9NQUlOU19TVEFUVVM9Ijx0ZCBzdHlsZT1cImNvbG9yOiBibGFja1wiPiR7UFJPWFlfQllQQVNTX0RPTUFJTlN9PC90ZD4iCgkJZmkKCQlpZiBbWyAke0ROU19TRVJWRVJTfSA9PSAqIlRoZXJlIGFyZW4ndCBhbnkgRE5TIFNlcnZlcnMgc2V0IiogXV07IHRoZW4KCQkJRE5TX1NFUlZFUlNfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCUROU19TRVJWRVJTX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7RE5TX1NFUlZFUlN9PC90ZD4iCgkJZmkKCQlpZiBbWyAke1NFQVJDSF9ET01BSU5TfSA9PSAqIlRoZXJlIGFyZW4ndCBhbnkgU2VhcmNoIERvbWFpbnMgc2V0IiogXV07IHRoZW4KCQkJU0VBUkNIX0RPTUFJTlNfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk9mZjwvdGQ+JwoJCQllbHNlCgkJCVNFQVJDSF9ET01BSU5TX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IHJlZFwiPiR7U0VBUkNIX0RPTUFJTlN9PC90ZD4iCgkJZmkKCQlQUk9YWV9JTkZPX1RBQkxFX1JPV1MrPSIgICAgICA8dHI+CgkJCQk8dGQ+JHtJTlRFUkZBQ0VfTkFNRV9OT19VTkRFUlNDT1JFfSR7SVNfQUNUSVZFX0lOVEVSRkFDRX08L3RkPgoJCQkJJHtBVVRPX1BST1hZX1NUQVRVU30KCQkJCSR7QVVUT19QUk9YWV9VUkxfU1RBVFVTfQoJCQkJJHtXRUJfUFJPWFlfU1RBVFVTfQoJCQkJJHtTRUNVUkVfV0VCX1BST1hZX1NUQVRVU30KCQkJCSR7RlRQX1BST1hZX1NUQVRVU30KCQkJCSR7U09DS1NfUFJPWFlfU1RBVFVTfQoJCQkJJHtTVFJFQU1JTkdfUFJPWFlfU1RBVFVTfQoJCQkJJHtHT1BIRVJfUFJPWFlfU1RBVFVTfQoJCQkJJHtQUk9YWV9CWVBBU1NfRE9NQUlOU19TVEFUVVN9CgkJCQkke0ROU19TRVJWRVJTX1NUQVRVU30KCQkJCSR7U0VBUkNIX0RPTUFJTlNfU1RBVFVTfQoJCQk8L3RyPiIKCQlkb25lCn0KCgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgQ3VycmVudCBJbnRlcmZhY2UgUHJveHkgZGV0YWlscwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCgpmdW5jdGlvbiBnZXRQcm94eUFkZHJlc3MgKCkgewoKCSNTZXQgUFJPWFkgSE9TVCBhbmQgUE9SVCB2YXJpYWJsZXMgdG8gYmUgZW1wdHkgYmVmb3JlIGNoZWNrcwoJUFJPWFlfSE9TVD0iIgoJUFJPWFlfUE9SVD0iIgoJCgkjR2V0IEFueSBhbmQgQWxsIHByb3h5IHNldHRpbmdzIGZyb20gY3VycmVudCBhY3RpdmUgaW50ZXJmYWNlCglQUk9YWV9EQVRBX0xPQ0FUSU9OPSIvdG1wL0N1cnJlbnRfUHJveHkiCglQUk9YWV9EQVRBPSQoL3Vzci9zYmluL3NjdXRpbCAtLXByb3h5ID4gJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfSkKCQoJI0RldGVjdCB3aGljaCBzZXR0aW5nIGlzIGVuYWJsZWQKCUFVVE9fUFJPWFlfRElTQ09WRVJZX1NUQVRVUz0kKC9iaW4vY2F0ICR7UFJPWFlfREFUQV9MT0NBVElPTn0gfCAvdXNyL2Jpbi9ncmVwIFByb3h5QXV0b0Rpc2NvdmVyeUVuYWJsZSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScpCglBVVRPX1BST1hZX0NPTkZJR1VSQVRJT05fU1RBVFVTPSQoL2Jpbi9jYXQgJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfXwgL3Vzci9iaW4vZ3JlcCBQcm94eUF1dG9Db25maWdFbmFibGUgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkM30nKQoJU0VDVVJFX1dFQl9QUk9YWV9TVEFUVVM9JCgvYmluL2NhdCAke1BST1hZX0RBVEFfTE9DQVRJT059IHwgL3Vzci9iaW4vZ3JlcCBIVFRQU0VuYWJsZSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScpCglXRUJfUFJPWFlfU1RBVFVTPSQoL2Jpbi9jYXQgJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfSB8IC91c3IvYmluL2dyZXAgSFRUUEVuYWJsZSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScpCgoJCgkjSWYgQXV0byBQcm94eSBEaXNjb3ZlcnkgaXMgRW5hYmxlZCB0aGVuIHF1ZXJ5IGFuZCBnZXQgcHJvc3kgaG9zdCBhbmQgcG9ydAoJaWYgW1sgJHtQUk9YWV9IT1NUfSA9PSAiIiBdXSAmJiBbWyAke1BST1hZX1BPUlR9ID09ICIiIF1dICYmIFtbICR7QVVUT19QUk9YWV9ESVNDT1ZFUllfU1RBVFVTfSA9PSAiMSIgXV07IHRoZW4KCQlBVVRPX1BST1hZX0RJU0NPVkVSWV9VUkw9JCgvYmluL2NhdCAke1BST1hZX0RBVEFfTE9DQVRJT059IHwgL3Vzci9iaW4vZ3JlcCBQcm94eUF1dG9Db25maWdVUkxTdHJpbmcgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkM30nKQoJCSN0ZXN0IFVSTCBkZWZhdWx0IGlzIGh0dHA6Ly93cGFkL3dwYWQuZGF0IGlmIG5vdCByZXNvbHZpbmcgdGhlbiBzZXR0aW5nIHRvIGVtcHR5CgkJQVVUT19QUk9YWV9ESVNDT1ZFUllfVVJMX1NUQVRVUz0kKC91c3IvYmluL2N1cmwgLUlzICR7QVVUT19QUk9YWV9ESVNDT1ZFUllfVVJMfSB8IC91c3IvYmluL2hlYWQgLW4gMSkKCQlpZiBbWyAke0FVVE9fUFJPWFlfRElTQ09WRVJZX1VSTF9TVEFUVVN9ID09ICJIVFRQLzEuMSAyMDAgT0siIF1dOyB0aGVuCgkJCSNQYWMgdXJsIGlzIGNvbnRhY3RhYmxlLCBsZXRzIHBhcnNlIGl0IGZvciBwcm94eSBob3N0IGFuZCBwb3J0CgkJCUFVVE9fUFJPWFlfRElTQ09WRVJZX1VSTF9DT05URU5UPSQoL3Vzci9iaW4vY3VybCAke0FVVE9fUFJPWFlfRElTQ09WRVJZX1VSTH0pCgkJCSNHZXQgUHJveHkgSG9zdAoJCQlQUk9YWV9IT1NUPSQoZWNobyAke0FVVE9fUFJPWFlfRElTQ09WRVJZX1VSTH1fQ09OVEVOVCB8IC91c3IvYmluL2dyZXAgUFJPWFkgfCAvdXNyL2Jpbi90YWlsIC1uIDEgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkM30nIHwgL3Vzci9iaW4vdHIgLWQgIic7IiB8IC91c3IvYmluL2N1dCAtZDogLWYxKQoJCQkjR2V0IFByb3h5IFBvcnQKCQkJUFJPWFlfUE9SVD0kKGVjaG8gJHtBVVRPX1BST1hZX0RJU0NPVkVSWV9VUkx9X0NPTlRFTlQgfCAvdXNyL2Jpbi9ncmVwIFBST1hZIHwgL3Vzci9iaW4vdGFpbCAtbiAxIHwgL3Vzci9iaW4vYXdrICd7cHJpbnQgJDN9JyB8IC91c3IvYmluL3RyIC1kICInOyIgfCAvdXNyL2Jpbi9jdXQgLWQ6IC1mMikKCQllbHNlCgkJCVBST1hZX0hPU1Q9IiIKCQkJUFJPWFlfUE9SVD0iIgoJCQkKCQlmaQoJZmkKCQoJI0lmIEF1dG8gUHJveHkgQ29uZmlndXJhdGlvbiBpcyBFbmFibGVkIHRoZW4gcXVlcnkgYW5kIGdldCBwcm9zeSBob3N0IGFuZCBwb3J0CglpZiBbWyAke1BST1hZX0hPU1R9ID09ICIiIF1dICYmIFtbICR7UFJPWFlfUE9SVH0gPT0gIiIgXV0gJiYgW1sgJHtBVVRPX1BST1hZX0NPTkZJR1VSQVRJT05fU1RBVFVTfSA9PSAiMSIgXV07IHRoZW4KCQoJCUFVVE9fUFJPWFlfRElTQ09WRVJZX1VSTD0kKC9iaW4vY2F0ICR7UFJPWFlfREFUQV9MT0NBVElPTn0gfCAvdXNyL2Jpbi9ncmVwIFByb3h5QXV0b0NvbmZpZ1VSTFN0cmluZyB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScpCgkJI3Rlc3QgVVJMIGRlZmF1bHQgaXMgaHR0cDovL3dwYWQvd3BhZC5kYXQgaWYgbm90IHJlc29sdmluZyB0aGVuIHNldHRpbmcgdG8gZW1wdHkKCQlBVVRPX1BST1hZX0RJU0NPVkVSWV9VUkxfU1RBVFVTPSQoL3Vzci9iaW4vY3VybCAtSXMgJHtBVVRPX1BST1hZX0RJU0NPVkVSWV9VUkx9IHwgL3Vzci9iaW4vaGVhZCAtbiAxKQoJCWlmIFtbICR7QVVUT19QUk9YWV9ESVNDT1ZFUllfVVJMX1NUQVRVU30gPX4gIkhUVFAiIF1dOyB0aGVuCgkJCSNQYWMgdXJsIGlzIGNvbnRhY3RhYmxlLCBsZXRzIHBhcnNlIGl0IGZvciBwcm94eSBob3N0IGFuZCBwb3J0CgkJCSNHZXQgUHJveHkgSG9zdAoJCQlQUk9YWV9IT1NUPSQoL3Vzci9iaW4vY3VybCAke0FVVE9fUFJPWFlfRElTQ09WRVJZX1VSTH0gfCAvdXNyL2Jpbi9ncmVwICdQUk9YWScgfCAvdXNyL2Jpbi90YWlsIC1uIDEgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkM30nIHwgL3Vzci9iaW4vdHIgLWQgIic7IiB8IC91c3IvYmluL2N1dCAtZDogLWYxKQoJCQkjR2V0IFByb3h5IFBvcnQKCQkJUFJPWFlfUE9SVD0kKC91c3IvYmluL2N1cmwgJHtBVVRPX1BST1hZX0RJU0NPVkVSWV9VUkx9IHwgL3Vzci9iaW4vZ3JlcCAnUFJPWFknIHwgL3Vzci9iaW4vdGFpbCAtbiAxIHwgL3Vzci9iaW4vYXdrICd7cHJpbnQgJDN9JyB8IC91c3IvYmluL3RyIC1kICInOyIgfCAvdXNyL2Jpbi9jdXQgLWQ6IC1mMikKCQllbHNlCgkJCVBST1hZX0hPU1Q9IiIKCQkJUFJPWFlfUE9SVD0iIgoJCQkKCQlmaQoJZmkKCQoJI0lmIFNlY3VyZSBXZWIgUHJveHkgaXMgRW5hYmxlZCB0aGVuIHF1ZXJ5IGFuZCBnZXQgcHJveHkgaG9zdCBhbmQgcG9ydAoJaWYgW1sgJHtQUk9YWV9IT1NUfSA9PSAiIiBdXSAmJiBbWyAke1BST1hZX1BPUlR9ID09ICIiIF1dICYmIFtbICRTRUNVUkVfV0VCX1BST1hZX1NUQVRVUyA9PSAiMSIgXV07IHRoZW4KCQkjZXh0cmFjdCBIb3N0IGFuZCBwb3J0IGZyb20gc2N1dGlsCgkJUFJPWFlfSE9TVD0kKC9iaW4vY2F0ICR7UFJPWFlfREFUQV9MT0NBVElPTn0gfCAvdXNyL2Jpbi9ncmVwIEhUVFBQcm94eSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScpCgkJUFJPWFlfUE9SVD0kKC9iaW4vY2F0ICR7UFJPWFlfREFUQV9MT0NBVElPTn0gfCAvdXNyL2Jpbi9ncmVwIEhUVFBQb3J0IHwgL3Vzci9iaW4vYXdrICd7cHJpbnQgJDN9JykKCWZpCgkKCSNJZiBXZWIgUHJveHkgaXMgRW5hYmxlZCB0aGVuIHF1ZXJ5IGFuZCBnZXQgcHJveHkgaG9zdCBhbmQgcG9ydAoJaWYgW1sgJHtQUk9YWV9IT1NUfSA9PSAiIiBdXSAmJiBbWyAke1BST1hZX1BPUlR9ID09ICIiIF1dICYmIFtbICRXRUJfUFJPWFlfU1RBVFVTID09ICIxIiBdXTsgdGhlbgoJCSNleHRyYWN0IEhvc3QgYW5kIHBvcnQgZnJvbSBzY3V0aWwKCQlQUk9YWV9IT1NUPSQoL2Jpbi9jYXQgJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfSB8IC91c3IvYmluL2dyZXAgSFRUUFByb3h5IHwgL3Vzci9iaW4vYXdrICd7cHJpbnQgJDN9JykKCQlQUk9YWV9QT1JUPSQoL2Jpbi9jYXQgJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfSB8IC91c3IvYmluL2dyZXAgSFRUUFBvcnQgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkM30nKQoJZmkKCQp9CgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgTkVUV09SSyBDSEVDSyBGVU5DVElPTlMKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIyMgR2V0IEhPU1ROQU1FIENvbm5lY3Rpb24gU3RhdHVzICMjIwpmdW5jdGlvbiBDYWxjdWxhdGVIb3N0SW5mb1RhYmxlcyAoKSB7CgllY2hvICJbc3RlcF0gQ2hlY2tpbmcgQXBwbGUgSG9zdHMuLi4iCglsYXN0Q2F0ZWdvcnk9Inp6ek5vbmUiICAjIFNvbWUgZmFrZSBjYXRlZ29yeSBzbyB3ZSByZWNvZ25pemUgdGhhdCB0aGUgZmlyc3QgaG9zdCBpcyB0aGUgc3RhcnQgb2YgYSBuZXcgY2F0ZWdvcnkKCWZpcnN0U2VydmVyPSJ5ZXMiICAgICAgICMgRmxhZyBmb3IgdGhlIGZpcnN0IGhvc3Qgc28gd2UgZG9uJ3QgdHJ5IHRvIGNsb3NlIHRoZSBwcmVjZWRpbmcgdGFibGUgLS0gdGhlcmUgd29uJ3QgYmUgb25lLiAKCUhPU1RfVEVTVF9UQUJMRVM9JycgICAgIyBUaGlzIGlzIHRoZSB2YXIgd2Ugd2lsbCBpbnNlcnQgaW50byB0aGUgSFRNTAoJZm9yIFNFUlZFUiBpbiAiJHtGVUxMX0FSUkFZW0BdfSI7IGRvCgkJI3NwbGl0IHRoZSByZWNvcmQgaW5mbyBmaWVsZHMKCQlIT1NUTkFNRT0kKGVjaG8gJHtTRVJWRVJ9IHwgY3V0IC1kICcsJyAtZjEpCgkJUE9SVD0kKGVjaG8gJHtTRVJWRVJ9IHwgY3V0IC1kICcsJyAtZjIpCgkJUFJPVE9DT0w9JChlY2hvICR7U0VSVkVSfSB8IGN1dCAtZCAnLCcgLWYzKQoJCUNBVEVHT1JZPSQoZWNobyAke1NFUlZFUn0gfCBjdXQgLWQgJywnIC1mNCkKCQkjIFdlIGhhdmUgY2F0ZWdvcmllcyBvZiBob3N0cy4uLiBlbnJvbGxtZW50LCBzb2Z0d2FyZSB1cGRhdGUsIGV0Yy4gV2UnbGwgcHV0IHRoZW0gaW4gc2VwYXJhdGUgdGFibGVzCgkJIyBJZiB0aGUgY2F0ZWdvcnkgZm9yIHRoaXMgaG9zdCBpcyBkaWZmZXJlbnQgdGhhbiB0aGUgbGFzdCBvbmUgYW5kIGlzIG5vdCBibGFuay4uLgoJCWlmIFtbICIke2xhc3RDYXRlZ29yeX0iICE9ICIke0NBVEVHT1JZfSIgXV0gJiYgW1sgISAteiAiJHtDQVRFR09SWX0iIF1dOyB0aGVuCgkJCSMgSWYgdGhpcyBpcyBub3QgdGhlIGZpcnN0IHNlcnZlciwgY2xvc2UgdXAgdGhlIHRhYmxlIGZyb20gdGhlIHByZXZpb3VzIGNhdGVnb3J5IGJlZm9yZSBtb3Zpbmcgb24gdG8gdGhlIG5leHQuIAoJCQllY2hvICJTdGFydGluZyBDYXRlZ29yeSA6ICR7Q0FURUdPUll9IgoJCQlpZiBbWyAiJHtmaXJzdFNlcnZlcn0iICE9ICJ5ZXMiIF1dOyB0aGVuCgkJCQkjV2UndmUgYWxyZWFkeSBzdGFydGVkIHRoZSB0YWJsZSBodG1sIHNvIG5vIG5lZWQgdG8gZG8gaXQgYWdhaW4uICAKCQkJCUhPU1RfVEVTVF9UQUJMRVMrPSIgICAgPC90YWJsZT4ke05MfSIKCQkJZmkKCQkJZmlyc3RTZXJ2ZXI9Im5vIgoJCQlsYXN0Q2F0ZWdvcnk9IiR7Q0FURUdPUll9IgoJCQlIT1NUX1RFU1RfVEFCTEVTKz0iICAgIDxoMz4ke0NBVEVHT1JZfTwvaDM+JHtOTH0iCgkJCUhPU1RfVEVTVF9UQUJMRVMrPSIgICAgPHRhYmxlIGNsYXNzPVwidGdcIj4ke05MfSIKCQkJSE9TVF9URVNUX1RBQkxFUys9IiAgICAgIDx0cj48dGggd2lkdGg9XCI0MCVcIj5IT1NUTkFNRTwvdGg+PHRoIHdpZHRoPVwiNTAlXCI+UmV2ZXJzZSBETlM8L3RoPjx0aCB3aWR0aD1cIjEwJVwiPklQIEFkZHJlc3M8L3RoPjx0aCB3aWR0aD1cIjEwJVwiPlBvcnQ8L3RoPjx0aCB3aWR0aD1cIjEwJVwiPlByb3RvY29sPC90aD48dGggd2lkdGg9XCIxMCVcIj5BY2Nlc3NpYmxlPC90aD48dGggd2lkdGg9XCIyMCVcIj5TU0wgRXJyb3I8L3RoPjwvdHI+JHtOTH0iCgkJZmkgIyBFbmQgb2YgdGFibGUgc3RhcnQgYW5kIGVuZCBsb2dpYy4KCgkJZWNobyAiICA+IENoZWNraW5nIGNvbm5lY3Rpdml0eSB0byA6ICR7SE9TVE5BTUV9ICR7UE9SVH0gJHtQUk9UT0NPTH0iCgoJCSMgTm93IHByaW50IHRoZSBpbmZvIGZvciB0aGlzIGhvc3QuLi4KCQkjUGVyZm9ybSBIb3N0IG5zbG9va3VwIHRvIGdldCByZXBvcnRlZCBJUAoJCUlQX0FERFJFU1M9JCgvdXNyL2Jpbi9uc2xvb2t1cCAke0hPU1ROQU1FfSB8IC91c3IvYmluL2dyZXAgIkFkZHJlc3M6IiB8IC91c3IvYmluL2F3ayAne3ByaW50JDJ9JyB8IC91c3IvYmluL3RhaWwgLTEpCgkJCgkJCgkJI0dldCBSZXZlcnNlIEROUyByZWNvcmQKCQlSRVZFUlNFX0ROUz0kKC91c3IvYmluL2RpZyAteCAke0lQX0FERFJFU1N9ICtzaG9ydCB8IC91c3IvYmluL3NlZCAncy8uJC8vJykKCQkKCQkjIFVzaW5nIG5jLCBpZiBwcm94eSBkZWZpbmVkIHRoZW4gYWRkaW5nIGluIHByb3h5IGZsYWcKCQlpZiBbWyAke1BST1RPQ09MfSA9PSAiVENQIiBdXTsgdGhlbgoJCQkjQ2hlY2sgaWYgUHJveHkgc2V0CgkJCWlmIFtbICR7UFJPWFlfSE9TVH0gPT0gIiIgXV0gJiYgW1sgJHtQUk9YWV9QT1JUfSA9PSAiIiBdXTt0aGVuCgkJCQkjbm8gcHJveHkgc2V0CgkJCQlTVEFUVVM9JCgvdXNyL2Jpbi9uYyAteiAtRyAzICR7SE9TVE5BTUV9ICR7UE9SVH0gMj4mMSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQ3fScpCQoJCQllbHNlCgkJCQlTVEFUVVM9JCgvdXNyL2Jpbi9uYyAteiAtRyAzIC14ICR7UFJPWFlfSE9TVH06JHtQUk9YWV9QT1JUfSAtWCBjb25uZWN0ICR7SE9TVE5BTUV9ICR7UE9SVH0gMj4mMSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQ3fScpCgkJCWZpCgkJCQoJCWVsaWYgW1sgJHtQUk9UT0NPTH0gPT0gIlRDUCAtIG5vbi1wcm94aWVkIiBdXTsgdGhlbgoJCQkjZm9yIG5vbiBwcm94eSBhd2FyZSB1cmxzIHdlIHdpbGwgYmUgdXNpbmcgbmV0Y2F0IGFrYSBuYwoJCQlTVEFUVVM9JCgvdXNyL2Jpbi9uYyAteiAtRyAzICR7SE9TVE5BTUV9ICR7UE9SVH0gMj4mMSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQ3fScpCgkJZWxzZSAgICAKCQkJIyBVRFAgZ29lcyBkaXJlY3QuLi4gbm90IHByb3hpZWQuIAoJCQlTVEFUVVM9JCgvdXNyL2Jpbi9uYyAtdSAteiAtRyAzICR7SE9TVE5BTUV9ICR7UE9SVH0gMj4mMSB8IC91c3IvYmluL2F3ayAne3ByaW50ICQ3fScpCgoJCWZpCgkJCgkJI0Jhc2VkIG9uIFN0YXR1cyB3aWxsIHNldCBBdmFpbGFiaWxpdHkgVmFsdWUKCQlpZiBbWyAke1NUQVRVU30gPX4gInN1Y2NlZWRlZCIgXV07IHRoZW4KCQkJQVZBSUxCSUxJVFk9InN1Y2NlZWRlZCIKCQkKCQllbHNlCgkJCUFWQUlMQklMSVRZPSJmYWlsZWQiCgkJZmkKCgoJCWlmIFtbICIke0FWQUlMQklMSVRZfSIgPT0gInN1Y2NlZWRlZCIgXV07IHRoZW4KCQkJQVZBSUxCSUxJVFlfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkF2YWlsYWJsZTwvdGQ+JwoJCQkjVGVzdCBmb3IgU1NMIEluc3BlY3Rpb24KCQkJaWYgW1sgJHtQT1JUfSA9PSAiODAiIF1dOyB0aGVuCgkJCQkjaHR0cCB0cmFmZmljIG5vIHNzbCBpbnNwZWN0aW9uIGlzc3VlcwoJCQkJU1NMX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5OL0E8L3RkPicKCQkJZWxzZQoJCQkJaWYgW1sgJHtQUk9UT0NPTH0gPT0gIlRDUCIgXV07IHRoZW4gICAgICAgICAgICAgICAgCgkJCQkJaWYgW1sgJHtQUk9YWV9IT1NUfSA9PSAiIiBdXSAmJiBbWyAke1BST1hZX1BPUlR9ID09ICIiIF1dO3RoZW4KCQkJCQkJQ0VSVF9TVEFUVVM9JChlY2hvIHwgL3Vzci9iaW4vb3BlbnNzbCBzX2NsaWVudCAtc2hvd2NlcnRzIC1jb25uZWN0ICIke0hPU1ROQU1FfToke1BPUlR9IiAtc2VydmVybmFtZSAiJHtIT1NUTkFNRX0iIDI+L2Rldi9udWxsIHwgL3Vzci9iaW4vb3BlbnNzbCB4NTA5IC1ub291dCAtaXNzdWVyICkKCQkJCQkJCgkJCQkJZWxzZQoJCQkJCQlDRVJUX1NUQVRVUz0kKGVjaG8gfCAvdXNyL2Jpbi9vcGVuc3NsIHNfY2xpZW50IC1zaG93Y2VydHMgLXByb3h5ICIke1BST1hZX0hPU1R9OiR7UFJPWFlfUE9SVH0iIC1jb25uZWN0ICIke0hPU1ROQU1FfToke1BPUlR9IiAtc2VydmVybmFtZSAiJHtIT1NUTkFNRX0iIDI+L2Rldi9udWxsIHwgL3Vzci9iaW4vb3BlbnNzbCB4NTA5IC1ub291dCAtaXNzdWVyKQoJCQkJCWZpCgoJCQkJCWlmIFtbICR7Q0VSVF9TVEFUVVN9ICE9ICoiQXBwbGUgSW5jIiogXV0gJiYgW1sgIiR7Q0VSVF9TVEFUVVN9IiAhPSAqIkFrYW1haSBUZWNobm9sb2dpZXMiKiBdXSAmJiBbWyAiJHtDRVJUX1NUQVRVU30iICE9ICoiQW1hem9uIiogXV0gJiYgW1sgIiR7Q0VSVF9TVEFUVVN9IiAhPSAqIkRpZ2lDZXJ0IiogXV0gJiYgW1sgIiR7Q0VSVF9TVEFUVVN9IiAhPSAqIk1pY3Jvc29mdCIqIF1dICYmIFtbICIke0NFUlRfU1RBVFVTfSIgIT0gKiJDT01PRE8iKiBdXSAmJiBbWyAiJHtDRVJUX1NUQVRVU30iICE9ICoiUXVvVmFkaXMiKiBdXTsgdGhlbgoJCQkJCQkKCQkJCQkJU1NMX0lTU1VFUj0kKGVjaG8gJHtDRVJUX1NUQVRVU30gfCBhd2sgLUYnTz18L09VJyAne3ByaW50ICQyfScpCgkJCQkJCQoJCQkJCQlpZiBbWyAke0hPU1ROQU1FfSA9PSAqImpjZHNkb3dubG9hZHMuc2VydmljZXMuamFtZmNsb3VkLmNvbSIgXV07dGhlbgoJCQkJCQkJU1NMX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5OL0E8L3RkPicKCQkJCQkJZWxzZQkKCQkJCQkJCVNTTF9TVEFUVVM9Ijx0ZCBzdHlsZT1cImNvbG9yOiByZWQ7XCI+VW5leHBlY3RlZCBDZXJ0aWZpY2F0ZTogJHtTU0xfSVNTVUVSfTwvdGQ+IgoJCQkJCQlmaQoJCQkJCQkKCQkJCQllbHNlCQoJCQkJCQkKCQkJCQkJU1NMX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5TdWNjZXNzZnVsPC90ZD4nCgkJCQkJZmkKCQkJCWVsc2UKCQkJCQlTU0xfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk4vQTwvdGQ+JwoJCQkJZmkKCQkJZmkKCQllbHNlCgkJCSMgbmMgZGlkIG5vdCBjb25uZWN0LiBUaGVyZSBpcyBubyBwb2ludCBpbiB0cnlpbmcgdGhlIFNTTCBjZXJ0IHN1YmplY3QgdGVzdC4gCgkJCUFWQUlMQklMSVRZX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+VW5hdmFpbGFibGU8L3RkPicKCQkJU1NMX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogYmxhY2s7Ij5Ob3QgY2hlY2tlZDwvdGQ+JwoJCWZpCgoJCSMgRG9uZS4gU3RpY2sgdGhlIHJvdyBvZiBpbmZvIGludG8gdGhlIEhUTUwgdmFyLi4uCgkJSE9TVF9URVNUX1RBQkxFUys9IiAgICAgICAgPHRyPjx0ZD4ke0hPU1ROQU1FfTwvdGQ+PHRkPiR7UkVWRVJTRV9ETlN9PC90ZD48dGQ+JHtJUF9BRERSRVNTfTwvdGQ+PHRkPiR7UE9SVH08L3RkPjx0ZD4ke1BST1RPQ09MfTwvdGQ+JHtBVkFJTEJJTElUWV9TVEFUVVN9JHtTU0xfU1RBVFVTfTwvdHI+JHtOTH0iCglkb25lCgkjIENsb3NlIHVwIHRoZSBodG1sIGZvciB0aGUgZmluYWwgdGFibGUKCUhPU1RfVEVTVF9UQUJMRVMrPSIgICAgPC90YWJsZT4ke05MfSIKfQoKI0NyZWF0ZSBOZXR3b3JrQ2hlY2sgdGFibGUKZnVuY3Rpb24gY3JlYXRlTmV0d29ya0NoZWNrVGFibGUgKCkgewovYmluL2NhdCA8PCBFT0YgPj4gIiR7UkVQT1JUX1BBVEh9IiAgCgkJPHAgLz4KCQk8aDI+U2VydmVyIENvbm5lY3Rpdml0eSBUZXN0czwvaDI+CgkJPHA+TmV0d29yayBhY2Nlc3MgdG8gdGhlIGZvbGxvd2luZyBob3N0bmFtZXMgYXJlIHJlcXVpcmVkIGZvciBlbnJvbGxpbmcsIGluc3RhbGxpbmcsIHJlc3RvcmluZyBvciB1cGRhdGluZyBBcHBsZSBPU3MuIFdlIHdpbGwgdGVzdCB0aGUgYWJpbGl0eSB0byByZWFjaCB0aGVzZSBzZXJ2aWNlcyBmcm9tIHRoaXMgZGV2aWNlLiBXZSB3aWxsIGFsc28gY2hlY2sgU1NMIGNlcnRpZmljYXRlIHN1YmplY3RzIHRvIHNlZSBpZiBhbnkgcHJveGllcyBtYXkgYmUgcmVwbGFjaW5nIHRoZW0uIE1hbnkgQXBwbGUgc2VydmljZXMgdXNlIGNlcnRpZmljYXRlIHBpbm5pbmcgdG8gcHJldmVudCBTU0wgaW50ZXJjZXB0aW9uLjwvcD4KCQk8cD4KCQkJPHU+UmVmZXJlbmNlczo8L3U+IDxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMTAwNjAiIHN0eWxlPSJjb2xvcjp3aGl0ZTsiPlVzZSBBcHBsZSBwcm9kdWN0cyBvbiBlbnRlcnByaXNlIG5ldHdvcmtzPC9hPiAvIDxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMDE5OTkiIHN0eWxlPSJjb2xvcjp3aGl0ZTsiPkFib3V0IG1hY09TLCBpT1MsIGFuZCBpVHVuZXMgc2VydmVyIGhvc3QgY29ubmVjdGlvbnM8L2E+IC8gPGEgaHJlZj0iaHR0cHM6Ly93d3cuamFtZi5jb20vamFtZi1uYXRpb24vYXJ0aWNsZXMvMzQiIHN0eWxlPSJjb2xvcjp3aGl0ZTsiPk5ldHdvcmsgUG9ydHMgVXNlZCBieSBKYW1mIFBybzwvYT4gLwoJCQk8YSBocmVmPSJodHRwczovL3d3dy5qYW1mLmNvbS9qYW1mLW5hdGlvbi9hcnRpY2xlcy80MDkiIHN0eWxlPSJjb2xvcjp3aGl0ZTsiPlBlcm1pdHRpbmcgSW5ib3VuZC9PdXRib3VuZCBUcmFmZmljIHdpdGggSmFtZiBDbG91ZDwvYT4KCQkJCgkJPC9wPgoke0hPU1RfVEVTVF9UQUJMRVN9CkVPRgp9CgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgQURESVRJT05BTCBDSEVDSyBGVU5DVElPTlMKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwoKI1J1bm5pbmcgQWRkaXRpb25hbCBDaGVja3MKZnVuY3Rpb24gY3JlYXRlQWRkaXRpb25hbENoZWNrc0hUTUwgKCkgewovYmluL2NhdCA8PCBFT0YgPj4gIiR7UkVQT1JUX1BBVEh9IgoJCTxoMj5PdGhlciBJbmZvcm1hdGlvbiBhbmQgU2V0dGluZ3M8L2gyPgoJCTx0YWJsZSBjbGFzcz0idGcyIj4KCQkJPHRyPgoJCQkJPHRoPlRlc3Q8L3RoPgoJCQkJPHRoPkFuc3dlcjwvdGg+CgkJCQk8dGg+Rm9sbG93LXVwPC90aD4KCQkJCTx0aD5SZWZlcmVuY2VzPC90aD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkFQTlMgYXBzY3RsIFN0YXR1czwvdGQ+CgkJCQkke0FQU0NUTF9TVEFUVVN9CgkJCQk8dGQ+QXBwbGUgUHVzaCBOb3RpZmljYXRpb25zIHNob3VsZCBiZSBhY2Nlc3NpYmxlLiA8L3RkPgoJCQkJPHRkPjxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMDM2MDkiIHN0eWxlPSJjb2xvcjpibGFjazsiPklmIHlvdXIgY2xpZW50cyBhcmVuJ3QgZ2V0dGluZyBBcHBsZSBwdXNoIG5vdGlmaWNhdGlvbnM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPlJvb3QgVXNlciBTdGF0dXM8L3RkPgoJCQkJJHtST09UX1VTRVJfU1RBVFVTfQoJCQkJPHRkPlRoZSByb290IHVzZXIgaXMgbm90IGludGVuZGVkIGZvciByb3V0aW5lIHVzZSwgaWYgZW5hYmxlZCwgc3RlcHMgc2hvdWxkIGJlIHRha2VuIHRvIGRpc2FibGU8L3RkPgoJCQkJPHRkPjxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMDQwMTIiIHN0eWxlPSJjb2xvcjpibGFjazsiPkhvdyB0byBlbmFibGUgYW5kIGRpc2FibGUgdGhlIHJvb3QgdXNlcjwvYT48L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+U0lQIFN0YXR1czwvdGQ+CgkJCQkke1NJUF9TVEFUVVN9CgkJCQk8dGQ+U0lQIGlzIGEgc2VjdXJpdHkgZmVhdHVyZSBvZiBtYWNPUyBpZiBkaXNhYmxlZCBpdCBpcyByZWNvbW1lbmRlZCB0byByZS1lbmFibGU8L3RkPgoJCQkJPHRkPjxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMDQ4OTkiIHN0eWxlPSJjb2xvcjpibGFjazsiPkFib3V0IFN5c3RlbSBJbnRlZ3JpdHkgUHJvdGVjdGlvbiBvbiB5b3VyIE1hYzwvYT48L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+R2F0ZWtlZXBlciBTdGF0dXM8L3RkPgoJCQkJJHtHQVRFS0VFUEVSX1NUQVRVU30KCQkJCTx0ZD5JZiBHYXRlS2VlcGVyIGlzIGRpc2FibGVkIGl0IG9wZW5zIHlvdXIgbWFjaGluZSB0byBtYWxpY2lvdXMgY29udGVudDwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9zdXBwb3J0LmFwcGxlLmNvbS9ndWlkZS9kZXBsb3ltZW50LXJlZmVyZW5jZS1tYWNvcy9nYXRla2VlcGVyLWFuZC1ydW50aW1lLXByb3RlY3Rpb24tYXBkMDJiOTI1ZTM4IiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5BYm91dCBHYXRlS2VlcGVyIG9uIHlvdXIgTWFjPC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5HYXRla2VlcGVyIENvbmZpZ3VyYXRpb248L3RkPgoJCQkJJHtNRE1fR0FURUtFRVBFUl9DT05GSUdVUkFUSU9OX1NUQVRVU30KCQkJCTx0ZD5EZXRlcm1pbmVzIGlmIEdhdGVLZWVwZXIgaXMgbWFuYWdlZCBieSBNRE0uPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL3N1cHBvcnQuYXBwbGUuY29tL2d1aWRlL2RlcGxveW1lbnQtcmVmZXJlbmNlLW1hY29zL2dhdGVrZWVwZXItYW5kLXJ1bnRpbWUtcHJvdGVjdGlvbi1hcGQwMmI5MjVlMzgiIHN0eWxlPSJjb2xvcjpibGFjazsiPkFib3V0IEdhdGVrZWVwZXIgb24geW91ciBNYWM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkZpcmV3YWxsIFN0YXR1czwvdGQ+CgkJCQkke0ZJUkVXQUxMX1NUQVRVU30KCQkJCTx0ZD5EZXRlcm1pbmVzIHN0YXR1cyBvZiBGaXJld2FsbDwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9zdXBwb3J0LmFwcGxlLmNvbS9ndWlkZS9kZXBsb3ltZW50L3NlY3VyaXR5LXByaXZhY3ktcGF5bG9hZC1zZXR0aW5ncy1kZXA2MWRjMDMwL3dlYiIgc3R5bGU9ImNvbG9yOmJsYWNrOyI+U2VjdXJpdHkgJiBQcml2YWN5IE1ETSBwYXlsb2FkIHNldHRpbmdzIGZvciBBcHBsZSBkZXZpY2VzPC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5GaXJld2FsbCBDb25maWd1cmF0aW9uPC90ZD4KCQkJCSR7TURNX0ZJUkVXQUxMX0NPTkZJR1VSQVRJT05fU1RBVFVTfQoJCQkJPHRkPkRldGVybWluZXMgaWYgdGhlIGJ1aWx0LWluIGZpcmV3YWxsIGlzIG1hbmFnZWQgYnkgTURNLjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9zdXBwb3J0LmFwcGxlLmNvbS9ndWlkZS9kZXBsb3ltZW50L3NlY3VyaXR5LXByaXZhY3ktcGF5bG9hZC1zZXR0aW5ncy1kZXA2MWRjMDMwL3dlYiIgc3R5bGU9ImNvbG9yOmJsYWNrOyI+U2VjdXJpdHkgJiBQcml2YWN5IE1ETSBwYXlsb2FkIHNldHRpbmdzIGZvciBBcHBsZSBkZXZpY2VzPC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5GaWxlVmF1bHQgU3RhdHVzPC90ZD4KCQkJCSR7RklMRVZBVUxUX1NUQVRVU30KCQkJCTx0ZD5JZiBGaWxlVmF1bHQgaXMgbm90IGVuYWJsZWQgdGhlIGRldmljZSBpcyBub3QgZW5jcnlwdGVkPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL3N1cHBvcnQuYXBwbGUuY29tL2VuLXVzL0hUMjA0ODM3IiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5Vc2UgRmlsZVZhdWx0IHRvIGVuY3J5cHQgeW91ciBNYWM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkZpbGVWYXVsdCBSZWNvdmVyeSBLZXkgRXNjcm93IENvbmZpZ3VyYXRpb248L3RkPgoJCQkJJHtNRE1fUFJLX0VTQ1JPV19TVEFUVVN9CgkJCQk8dGQ+RGV0ZXJtaW5lcyBpZiBNRE0gaXMgY29uZmlndXJlZCB0byBlc2Nyb3cgRmlsZVZhdWx0IHJlY292ZXJ5IGtleXMuPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL3N1cHBvcnQuYXBwbGUuY29tL2VuLXVzL0hUMjA0ODM3IiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5Vc2UgRmlsZVZhdWx0IHRvIGVuY3J5cHQgeW91ciBNYWM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkxlZ2FjeSBTb2Z0d2FyZSBVcGRhdGUgU2VydmVyIFN0YXR1czwvdGQ+CgkJCQkke0xFR0FDWV9TV1VTX1NUQVRVU30KCQkJCTx0ZD5JZiBhIGxlZ2FjeSBzb2Z0d2FyZSB1cGRhdGUgc2VydmVyIGNvbmZpZ3VyYXRpb24gd2FzIGRlcGxveWVkIHRvIHRoaXMgTWFjPC90ZD4KCQkJCTx0ZD5Vc2UgQXBwbGUgU29mdHdhcmUgVXBkYXRlIFNlcnZlcnM8L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+QWN0aXZlIERpcmVjdG9yeSBEb21haW48L3RkPgoJCQkJJHtBRF9TVEFUVVN9CgkJCQk8dGQ+SWYgYmluZGluZyBpcyB1c2VkLCBkaXNjdXNzIG1vZGVybiBhdXRoZW50aWNhdGlvbiBhbmQgbm8tYmluZCBhcHByb2FjaGVzLjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly93d3cuamFtZi5jb20vcHJvZHVjdHMvamFtZi1jb25uZWN0LyIgc3R5bGU9ImNvbG9yOmJsYWNrOyI+QWJvdXQgTm9NQUQgYW5kIEphbWYgQ29ubmVjdDwvYT48L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+Q29udGVudCBDYWNoZTwvdGQ+CgkJCQkke0NPTlRFTlRfQ0FDSEVfU1RBVFVTfQoJCQkJPHRkPklmIG5vbmUgaXMgYXZhaWxhYmxlLCBkaXNjdXNzIGhvdyBBcHBsZSBjb250ZW50IGNhY2hpbmcgaW1wcm92ZXMgdXNlciBleHBlcmllbmNlIGFuZCByZWR1Y2VzIFdBTiB0cmFmZmljLjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9zdXBwb3J0LmFwcGxlLmNvbS9lbi1hdS9ndWlkZS9tYWMtaGVscC9tY2hsOTM4OGJhMWIvMTAuMTUvbWFjLzEwLjE1IiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5XaGF0IGlzIGNvbnRlbnQgY2FjaGluZyBvbiBNYWM/PC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5NRE0gRW5yb2xsbWVudDwvdGQ+CgkJCQkke0FERV9FTlJPTExFRF9TVEFUVVN9CgkJCQk8dGQ+RGV0ZXJtaW5lcyBpZiB0aGUgTWFjIHdhcyBkZXBsb3llZCB2aWEgQXV0b21hdGVkIERldmljZSBFbnJvbGxtZW50LjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9kb2NzLmphbWYuY29tLzEwLjQxLjAvamFtZi1wcm8vZG9jdW1lbnRhdGlvbi9BdXRvbWF0ZWRfRGV2aWNlX0Vucm9sbG1lbnRfSW50ZWdyYXRpb24uaHRtbCIgc3R5bGU9ImNvbG9yOmJsYWNrOyI+QXV0b21hdGVkIERldmljZSBFbnJvbGxtZW50IEludGVncmF0aW9uPC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5NRE0gRW5yb2xsbWVudCBUeXBlPC90ZD4KCQkJCSR7TURNX0VOUk9MTEVEX1NUQVRVU30KCQkJCTx0ZD5EZXRlcm1pbmVzIGlmIHRoZSBkZXZpY2UgaXMgZW5yb2xsZWQgaW4gYW4gTURNLjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9zdXBwb3J0LmFwcGxlLmNvbS9ndWlkZS9kZXBsb3ltZW50L2ludHJvLXRvLWFwcGxlLWRldmljZS1lbnJvbGxtZW50LXR5cGVzLWRlcDA4ZjU0ZmNmNi93ZWIiIHN0eWxlPSJjb2xvcjpibGFjazsiPkF1dG9tYXRlZCBEZXZpY2UgRW5yb2xsbWVudCBJbnRlZ3JhdGlvbjwvYT48L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+TURNIFNlcnZlciBVUkw8L3RkPgoJCQkJJHtNRE1fU0VSVkVSX1VSTH0KCQkJCTx0ZD5EaXNwbGF5cyBVUkwgb2YgTURNIHNlcnZlciBpbiB3aGljaCB0aGlzIE1hYyBpcyBlbnJvbGxlZC48L3RkPgoJCQkJPHRkPk1ETSBTZXJ2ZXI8L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+QXV0b21hdGljIExvZ2luIENvbmZpZ3VyYXRpb248L3RkPgoJCQkJJHtNRE1fTE9HSU5fQ09ORklHVVJBVElPTl9TVEFUVVN9CgkJCQk8dGQ+RGV0ZXJtaW5lcyBpZiBhdXRvbWF0aWMgbG9naW4gaXMgbWFuYWdlZCBieSBNRE0uPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL3N1cHBvcnQuYXBwbGUuY29tL2d1aWRlL2RlcGxveW1lbnQvbG9naW4td2luZG93LXBheWxvYWQtc2V0dGluZ3MtZGVwMmE4MjJiMjkvd2ViIiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5Mb2dpbiBXaW5kb3cgTURNIHBheWxvYWQgc2V0dGluZ3MgZm9yIEFwcGxlIGRldmljZXM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkJvb3RzdHJhcCBUb2tlbjwvdGQ+CgkJCQkke0JPT1RTVFJBUF9UT0tFTl9TVEFUVVN9CgkJCQk8dGQ+RGV0ZXJtaW5lcyBpZiBhIGJvb3RzdHJhcCB0b2tlbiBoYXMgYmVlbiBkZXBsb3llZCB0byB0aGlzIE1hYyBjb21wdXRlci48L3RkPgoJCQkJPHRkPjxhIGhyZWY9Imh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZ3VpZGUvZGVwbG95bWVudC91c2Utc2VjdXJlLWFuZC1ib290c3RyYXAtdG9rZW5zLWRlcDI0ZGJkY2Y5ZS93ZWIiIHN0eWxlPSJjb2xvcjpibGFjazsiPlVzZSBzZWN1cmUgdG9rZW4sIGJvb3RzdHJhcCB0b2tlbiwgYW5kIHZvbHVtZSBvd25lcnNoaXAgaW4gZGVwbG95bWVudHM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPkd1ZXN0IEFjY291bnQgQ29uZmlndXJhdGlvbjwvdGQ+CgkJCQkke01ETV9HVUVTVF9DT05GSUdVUkFUSU9OX1NUQVRVU30KCQkJCTx0ZD5EZXRlcm1pbmVzIGlmIGd1ZXN0IGFjY291bnQgc2V0dGluZ3MgYXJlIG1hbmFnZWQgd2l0aCBNRE0uPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL3N1cHBvcnQuYXBwbGUuY29tL2d1aWRlL2RlcGxveW1lbnQvbG9naW4td2luZG93LXBheWxvYWQtc2V0dGluZ3MtZGVwMmE4MjJiMjkvd2ViIiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5Mb2dpbiBXaW5kb3cgTURNIHBheWxvYWQgc2V0dGluZ3MgZm9yIEFwcGxlIGRldmljZXM8L2E+PC90ZD4KCQkJPC90cj4KCQkJPHRyPgoJCQkJPHRkPlNjcmVlbiBTYXZlciBJZGxlIFRpbWUgQ29uZmlndXJhdGlvbjwvdGQ+CgkJCQkke01ETV9TQ1JFRU5TQVZFUl9JRExFX1RJTUVfU1RBVFVTfQoJCQkJPHRkPkRldGVybWluZXMgaWYgc2NyZWVuIHNhdmVyIGlkbGUgdGltZSBpcyBtYW5hZ2VkIGJ5IE1ETS48L3RkPgoJCQkJPHRkPjxhIGhyZWY9Imh0dHBzOi8vZGV2ZWxvcGVyLmFwcGxlLmNvbS9kb2N1bWVudGF0aW9uL2RldmljZW1hbmFnZW1lbnQvc2NyZWVuc2F2ZXIiIHN0eWxlPSJjb2xvcjpibGFjazsiPlNjcmVlbnNhdmVyIE1ETSBQYXlsb2FkPC9hPjwvdGQ+CgkJCTwvdHI+CgkJCTx0cj4KCQkJCTx0ZD5MYXVuY2ggRGFlbW9uczwvdGQ+CgkJCQk8dGQ+JHtMQVVOQ0hfREFFTU9OU19TVEFUVVN9PC90ZD4KCQkJCTx0ZD5WZXJpZnkgdGhhdCBhbGwgYXJlIGV4cGVjdGVkIGFuZCBuZWVkZWQuPC90ZD4KCQkJCTx0ZD48YSBocmVmPSJodHRwczovL2RldmVsb3Blci5hcHBsZS5jb20vbGlicmFyeS9hcmNoaXZlL2RvY3VtZW50YXRpb24vTWFjT1NYL0NvbmNlcHR1YWwvQlBTeXN0ZW1TdGFydHVwL0NoYXB0ZXJzL0ludHJvZHVjdGlvbi5odG1sIiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5BYm91dCBEYWVtb25zIGFuZCBTZXJ2aWNlczwvYT48L3RkPgoJCQk8L3RyPgoJCQk8dHI+CgkJCQk8dGQ+VGhpcmQtUGFydHkgU3lzdGVtIEV4dGVuc2lvbnM8L3RkPgoJCQkJPHRkPiR7S0VYVF9TVEFUVVN9PC90ZD4KCQkJCTx0ZD5EaXNjdXNzIHVwZ3JhZGVzIG9yIHJlcGxhY2VtZW50IHNvbHV0aW9ucyB0aGF0IGRlY3JlYXNlIHJlbGlhbmNlIG9uIGtlcm5lbCBleHRlbnNpb25zLjwvdGQ+CgkJCQk8dGQ+PGEgaHJlZj0iaHR0cHM6Ly9kZXZlbG9wZXIuYXBwbGUuY29tL3N1cHBvcnQva2VybmVsLWV4dGVuc2lvbnMvIiBzdHlsZT0iY29sb3I6YmxhY2s7Ij5EZXByZWNhdGVkIEtlcm5lbCBFeHRlbnNpb25zIGFuZCBTeXN0ZW0gRXh0ZW5zaW9uIEFsdGVybmF0aXZlczwvYT48L3RkPgoJCQk8L3RyPgoJCTwvdGFibGU+CkVPRgp9CgpmdW5jdGlvbiBjYWxjdWxhdGVBZGRpdGlvbmFsQ2hlY2tzICgpIHsKCSN0aGlzIGZ1bmN0aW9uIGlzIHVzZWQgdG8gcG9wdWxhdGUgaW5mb3JtYXRpb24gaW50byB0aGUgQWRkdGlvbmFsIENoZWNrcyBSZXBvcnQKCQoJI2Fwc2N0bCBTdGF0dXMKCUFQU0NUTF9TVEFUVVNfQ0hFQ0s9JCgvU3lzdGVtL0xpYnJhcnkvUHJpdmF0ZUZyYW1ld29ya3MvQXBwbGVQdXNoU2VydmljZS5mcmFtZXdvcmsvYXBzY3RsIHN0YXR1cyB8IC91c3IvYmluL2dyZXAgImNvbm5lY3RlZCB0byBzZXJ2ZXIgaG9zdG5hbWU6IikKCQlpZiBbWyAke0FQU0NUTF9TVEFUVVNfQ0hFQ0t9ID1+ICJjb3VyaWVyLnB1c2guYXBwbGUuY29tIiBdXTsgdGhlbgoJCQlBUFNDVExfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkNvbm5lY3RlZDwvdGQ+JwoJCWVsc2UKCQkJQVBTQ1RMX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+VW5hdmFpbGFibGU8L3RkPicKCQlmaQoJCgkjUm9vdCBVc2VyIFN0YXR1cwoJUk9PVF9VU0VSX0NIRUNLPSQoL3Vzci9iaW4vZHNjbCAuIC1yZWFkIC9Vc2Vycy9yb290IEF1dGhlbnRpY2F0aW9uQXV0aG9yaXR5IDI+JjEgfCAvdXNyL2Jpbi9ncmVwIC1jICJObyBzdWNoIGtleSIpCgkJaWYgW1sgJHtST09UX1VTRVJfQ0hFQ0t9ID09ICIxIiBdXTsgdGhlbgoJCQlST09UX1VTRVJfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkRpc2FibGVkPC90ZD4nCgkJZWxzZQoJCQlST09UX1VTRVJfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiByZWQ7Ij5FbmFibGVkPC90ZD4nCgkJZmkKCSNTSVAgU3RhdHVzCglTSVBfU1RBVFVTX0NIRUNLPSQoL3Vzci9iaW4vY3NydXRpbCBzdGF0dXMgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkNX0nIHwgL3Vzci9iaW4vdHIgLWQgJy4nKQoJCWlmIFtbICR7U0lQX1NUQVRVU19DSEVDS30gPT0gImVuYWJsZWQiIF1dOyB0aGVuCgkJCVNJUF9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+RW5hYmxlZDwvdGQ+JwoJCWVsc2UKCQkJU0lQX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+RGlzYWJsZWQ8L3RkPicKCQlmaQoJI0dhdGVrZWVwZXIKCUdBVEVLRUVQRVJfU1RBVFVTX0NIRUNLPSQoL3Vzci9zYmluL3NwY3RsIC0tc3RhdHVzIHwgL3Vzci9iaW4vYXdrICcvYXNzZXNzbWVudHMvIHtwcmludCAkMn0nKQoJCWlmIFtbICR7R0FURUtFRVBFUl9TVEFUVVNfQ0hFQ0t9ID09ICJlbmFibGVkIiBdXTsgdGhlbgoJCQlHQVRFS0VFUEVSX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5FbmFibGVkPC90ZD4nCgkJZWxzZQoJCQlHQVRFS0VFUEVSX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+RGlzYWJsZWQ8L3RkPicKCQlmaQoJCgkjRmlsZVZhdWx0IFN0YXR1cwoJRklMRVZBVUxUX1NUQVRVU19DSEVDSz0kKC91c3IvYmluL2ZkZXNldHVwIHN0YXR1cyB8IC91c3IvYmluL2F3ayAne3ByaW50ICQzfScgfCAvdXNyL2Jpbi90ciAtZCAuKQoJCWlmIFtbICR7RklMRVZBVUxUX1NUQVRVU19DSEVDS30gPT0gIk9uIiBdXTsgdGhlbgoJCQlGSUxFVkFVTFRfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkVuYWJsZWQ8L3RkPicKCQllbHNlCgkJCUZJTEVWQVVMVF9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkRpc2FibGVkPC90ZD4nCgkJZmkKCQoJI01ETSBGaWxlVmF1bHQgS2V5IEVzY3JvdyBDb25maWd1cmF0aW9uCglNRE1fUFJLX0VTQ1JPV19DT05GSUdVUkFUSU9OX0NIRUNLPSQocHJvZmlsZXMgLVAgLW8gIHN0ZG91dCB8IGdyZXAgImNvbS5hcHBsZS5zZWN1cml0eS5GREVSZWNvdmVyeUtleUVzY3JvdyIpCglpZiBbWyAteiAkTURNX1BSS19FU0NST1dfQ09ORklHVVJBVElPTl9DSEVDSyBdXTsgdGhlbgoJCU1ETV9QUktfRVNDUk9XX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+RmlsZVZhdWx0IGtleSBlc2Nyb3cgaXMgdW5tYW5hZ2VkPC90ZD4nCgllbHNlCgkJTURNX1BSS19FU0NST1dfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkZpbGVWYXVsdCBrZXkgZXNjcm93IGNvbmZpZ3VyYXRpb24gZm91bmQ8L3RkPicKCWZpCgkKCSNBY3RpdmUgRGlyZWN0b3J5IERvbWFpbgoJQURfU1RBVFVTX0NIRUNLPSQoL3Vzci9zYmluL2RzY29uZmlnYWQgLXNob3cgfCAvdXNyL2Jpbi9ncmVwICdBY3RpdmUgRGlyZWN0b3J5IERvbWFpbicgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkNX0nKQoJCWlmIFtbIC16ICR7QURfU1RBVFVTX0NIRUNLfSBdXTt0aGVuCgkJCUFEX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogZ3JlZW47Ij5Ob3QgQm91bmQ8L3RkPicKCQllbHNlCgkJCUFEX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IGJsYWNrXCI+JHtBRF9TVEFUVVNfQ0hFQ0t9PC90ZD4iCgkJZmkKCQoJI0NvbnRlbnQgQ2FjaGUgcmVwb3J0CglDT05URU5UX0NBQ0hFX0NIRUNLPSQoL3Vzci9iaW4vQXNzZXRDYWNoZUxvY2F0b3JVdGlsIDI+JjEgfCAvdXNyL2Jpbi9ncmVwICJndWlkIiB8IC91c3IvYmluL2F3ayAne3ByaW50JDR9JyB8IC91c3IvYmluL3NlZCAtZSAncy9eXCguKlwpOi4qJC9cMS8nIC1lICdzL14vLC8nIHwgL3Vzci9iaW4vc29ydCAtdSB8IC91c3IvYmluL3NlZCAncy8sLy8nKQoJCWlmIFtbIC16ICR7Q09OVEVOVF9DQUNIRV9DSEVDS30gXV07dGhlbgoJCQlDT05URU5UX0NBQ0hFX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogYmxhY2s7Ij5Ob25lPC90ZD4nCgkJZWxzZQoJCQlDT05URU5UX0NBQ0hFX1NUQVRVUz0iPHRkIHN0eWxlPVwiY29sb3I6IGdyZWVuXCI+JHtDT05URU5UX0NBQ0hFX0NIRUNLfTwvdGQ+IgoJCWZpCgkKCSNMYXVuY2ggRGFlbW9ucwoJTEFVTkNIX0RBRU1PTlNfU1RBVFVTPSQoL2Jpbi9sYXVuY2hjdGwgbGlzdCB8IC91c3IvYmluL2dyZXAgLXYgY29tLmFwcGxlLiB8IC91c3IvYmluL2N1dCAtZjMgfCAvdXNyL2Jpbi9zZWQgJ3N8JHw8YnI+fGcnIHwgL3Vzci9iaW4vYXdrIE5SXD4xKQoJCgkjVGhpcmQtUGFydHkgU3lzdGVtIEV4dGVuc2lvbnMKCUtFWFRfU1RBVFVTPSQoL3Vzci9zYmluL2tleHRzdGF0IHwgL3Vzci9iaW4vZ3JlcCAtdiBjb20uYXBwbGUgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkNn0nIHwgL3Vzci9iaW4vc2VkICdzfCR8PGJyPnxnJyB8IC91c3IvYmluL2F3ayBOUlw+MSApCgkKCSNNRE0gR2F0ZWtlZXAgQ29uZmlndXJhdGlvbgoJTURNX0dBVEVLRUVQRVJfQ09ORklHVVJBVElPTl9DSEVDSz0kKHByb2ZpbGVzIC1QIC1vIHN0ZG91dCB8IGdyZXAgImNvbS5hcHBsZS5zeXN0ZW1wb2xpY3kuY29udHJvbCIpCglpZiBbWyAteiAkTURNX0dBVEVLRUVQRVJfQ09ORklHVVJBVElPTl9DSEVDSyBdXTt0aGVuCgkJTURNX0dBVEVLRUVQRVJfQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkdhdGVrZWVwZXIgaXMgdW5tYW5hZ2VkPC90ZD4nCgllbHNlCgkJTURNX0dBVEVLRUVQRVJfQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+QSBHYXRla2VlcGVyIHByb2ZpbGUgaGFzIGJlZW4gZm91bmQ8L3RkPicKCWZpCgkKCSNMZWdhY3kgU29mdHdhcmUgVXBkYXRlIFNlcnZlcnMKCUxFR0FDWV9TV1VTX0NIRUNLPSQoL3Vzci9iaW4vZGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUuU29mdHdhcmVVcGRhdGUucGxpc3QgQ2F0YWxvZ1VSTCkKCWlmIFtbIC16ICRMRUdBQ1lfU1dVU19DSEVDSyBdXTt0aGVuCgkJTEVHQUNZX1NXVVNfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPk5vbmU8L3RkPicKCWVsc2UKCQlMRUdBQ1lfU1dVU19TVEFUVVM9Ijx0ZCBzdHlsZT1cImNvbG9yOiByZWRcIj4ke0xFR0FDWV9TV1VTX0NIRUNLfTwvdGQ+IgoJZmkKCQoJI0FERSBFbmFibGVkCglBREVfRU5ST0xMRURfQ0hFQ0s9JChwcm9maWxlcyBzdGF0dXMgLXR5cGUgZW5yb2xsbWVudCB8IGF3ayAnL0Vucm9sbGVkIHZpYSBERVA6L3twcmludCAkTkZ9JykKCWlmIFtbICRBREVfRU5ST0xMRURfQ0hFQ0sgPT0gIlllcyIgXV07dGhlbgoJCUFERV9FTlJPTExFRF9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+QXV0b21hdGVkIGRldmljZSBlbnJvbGxtZW50IGlzIGVuYWJsZWQuPC90ZD4nCgllbHNlCgkJQURFX0VOUk9MTEVEX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+QXV0b21hdGVkIGRldmljZSBlbnJvbGxtZW50IGlzIG5vdCBlbmFibGVkPC90ZD4nCglmaQoJCgkjRW5yb2xsZWQgaW50byBNRE0gQ2hlY2sKCU1ETV9FTlJPTExFRF9DSEVDSz0kKHByb2ZpbGVzIHN0YXR1cyAtdHlwZSBlbnJvbGxtZW50IHwgYXdrICcvTURNIGVucm9sbG1lbnQ6L3twcmludCAkMywgJDQsICQ1fScpCglpZiBbWyAkTURNX0VOUk9MTEVEX0NIRUNLID09ICJZZXMgKFVzZXIgQXBwcm92ZWQpIiBdXTsgdGhlbgoJCU1ETV9FTlJPTExFRF9TVEFUVVM9Ijx0ZCBzdHlsZT1cImNvbG9yOiBncmVlblwiPiRNRE1fRU5ST0xMRURfQ0hFQ0s8L3RkPiIKCWVsc2UKCQlNRE1fRU5ST0xMRURfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiByZWQ7Ij5ObzwvdGQ+JwoJZmkKCQoJI01ETSBTZXJ2ZXIgVVJMCglNRE1fU0VSVkVSX1VSTD0kKHByb2ZpbGVzIHN0YXR1cyAtdHlwZSBlbnJvbGxtZW50IHwgYXdrICcvTURNIHNlcnZlcjove3ByaW50ICRORn0nIHwgc2VkICdzfF5odHRwW3NdOi8vfHxnJyB8IHNlZCAncy9cLy4qLy8nKQoJTURNX1NFUlZFUl9VUkw9Ijx0ZCBzdHlsZT1cImNvbG9yOiBibGFja1wiPiRNRE1fU0VSVkVSX1VSTDwvdGQ+IgoJCgkjTURNIENvbnRyb2xsZWQgQXV0b0xvZ2luCglNRE1fTE9HSU5fQ09ORklHVVJBVElPTl9DSEVDSz0kKHByb2ZpbGVzIC1QIC1vIHN0ZG91dCB8IGdyZXAgImNvbS5hcHBsZS5sb2dpbi5tY3guRGlzYWJsZUF1dG9Mb2dpbkNsaWVudCIpCglpZiBbWyAteiAkTURNX0xPR0lOX0NPTkZJR1VSQVRJT05fQ0hFQ0sgXV07IHRoZW4KCQlNRE1fTE9HSU5fQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkF1dG9tYXRpYyBsb2dpbiBpcyB1bm1hbmFnZWQ8L3RkPicKCWVsc2UKCQlNRE1fTE9HSU5fQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+QW4gYXV0b21hdGljIGxvZ2luIHByb2ZpbGUgaGFzIGJlZW4gZm91bmQ8L3RkPicKCWZpCgkKCSNCb290c3RyYXAgVG9rZW4KCUJPT1RTVFJBUF9UT0tFTl9DSEVDSz0kKHByb2ZpbGVzIHN0YXR1cyAtdHlwZSBib290c3RyYXB0b2tlbiB8IGF3ayAnL0Jvb3RzdHJhcCBUb2tlbiBlc2Nyb3dlZCB0byBzZXJ2ZXI6L3twcmludCAkTkZ9JykKCWlmIFtbICRCT09UU1RSQVBfVE9LRU5fQ0hFQ0sgPT0gIllFUyIgXV07IHRoZW4KCQlCT09UU1RSQVBfVE9LRU5fU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkJvb3RzdHJhcCB0b2tlbiBlc2Nyb3dlZCB0byBNRE0gc2VydmVyPC90ZD4nCgllbHNlCgkJQk9PVFNUUkFQX1RPS0VOX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+Qm9vdHN0cmFwIHRva2VuIG5vdCBlc2Nyb3dlZCB0byBNRE0gc2VydmVyPC90ZD4nCglmaQoJCglGSVJFV0FMTF9DSEVDSz0kKC91c3IvYmluL2RlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmFsZiBnbG9iYWxzdGF0ZSkKCWlmIFtbICRGSVJFV0FMTF9DSEVDSyA9PSAiMCIgXV07IHRoZW4KCQlGSVJFV0FMTF9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkRpc2FibGVkPC90ZD4nCgllbHNlCgkJRklSRVdBTExfU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkVuYWJsZWQ8L3RkPicKCWZpCgkKCU1ETV9GSVJFV0FMTF9DT05GSUdVUkFUSU9OX0NIRUNLPSQocHJvZmlsZXMgLVAgLW8gc3Rkb3V0IHwgZ3JlcCAiY29tLmFwcGxlLnNlY3VyaXR5LmZpcmV3YWxsIikKCWlmIFtbIC16ICRNRE1fRklSRVdBTExfQ09ORklHVVJBVElPTl9DSEVDSyBdXTsgdGhlbgoJCU1ETV9GSVJFV0FMTF9DT05GSUdVUkFUSU9OX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+RmlyZXdhbGwgaXMgdW5tYW5hZ2VkPC90ZD4nCgllbHNlCgkJTURNX0ZJUkVXQUxMX0NPTkZJR1VSQVRJT05fU1RBVFVTPSc8dGQgc3R5bGU9ImNvbG9yOiBncmVlbjsiPkEgRmlyZXdhbGwgcHJvZmlsZSBoYXMgYmVlbiBmb3VuZDwvdGQ+JwoJZmkKCQoJI01ETSBHdWVzdCBQcm9maWxlIENvbmZpZ3VyYXRpb24KCU1ETV9HVUVTVF9DT05GSUdVUkFUSU9OX0NIRUNLPSQocHJvZmlsZXMgLVAgLW8gc3Rkb3V0IHwgZ3JlcCAnRGlzYWJsZUd1ZXN0QWNjb3VudCcpCglpZiBbWyAteiAkTURNX0dVRVNUX0NPTkZJR1VSQVRJT05fQ0hFQ0sgXV07IHRoZW4KCQlNRE1fR1VFU1RfQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkd1ZXN0IGFjY291bnRzIGFyZSB1bm1hbmFnZWQ8L3RkPicKCWVsc2UKCQlNRE1fR1VFU1RfQ09ORklHVVJBVElPTl9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IGdyZWVuOyI+QSBndWVzdCBwcm9maWxlIGNvbmZpZ3VyYXRpb24gaGFzIGJlZW4gZm91bmQ8L3RkPicKCWZpCgkKCSNNRE0gSWRsZSBUaW1lIENvbmZpZ3VyYXRpb24gKFNjcmVlbnNhdmVyKQoJTURNX1NDUkVFTlNBVkVSX0lETEVfVElNRV9DSEVDSz0kKHByb2ZpbGVzIC1QIC1vIHN0ZG91dCB8IGdyZXAgImxvZ2luV2luZG93SWRsZVRpbWUiKQoJaWYgW1sgLXogJE1ETV9TQ1JFRU5TQVZFUl9JRExFX1RJTUVfQ0hFQ0sgXV07IHRoZW4KCQlNRE1fU0NSRUVOU0FWRVJfSURMRV9USU1FX1NUQVRVUz0nPHRkIHN0eWxlPSJjb2xvcjogcmVkOyI+U2NyZWVuc2F2ZXIgaWRsZSB0aW1lIGlzIG5vdCBtYW5hZ2VkPC90ZD4nCgllbHNlCgkJTURNX1NDUkVFTlNBVkVSX0lETEVfVElNRV9TVEFUVVM9Jzx0ZCBzdHlsZT0iY29sb3I6IHJlZDsiPkEgc2NyZWVuc2F2ZXIgaWRsZSB0aW1lIHByb2ZpbGUgaGFzIGJlZW4gZm91bmQ8L3RkPicKCWZpCn0KCgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIyBXSEVSRSBUSEUgTUFHSUMgSEFQUEVOUwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKI2Rpc3BsYXkgc3RhdHVzIAplY2hvICJbc3RhcnRdIFN0YXJ0aW5nIHRlc3RzIgplY2hvICJbc3RlcF0gUmVxdWVzdGluZyBuZXR3b3JrIGludGVyZmFjZSBpbmZvLi4uIgoKI3VzZWQgYXMgYSB2YXJpYWJsZSBmb3IgcG9wdWxhdGluZyBsb2NhbCBuZXR3b3JrIGRhdGEKc3lzUHJvZmlsZXJOZXR3b3JrRGF0YT0kKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BOZXR3b3JrRGF0YVR5cGUgMj4gL2Rldi9udWxsKQoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgV0hFUkUgVEhFIEZVTkNUSU9OUyBBUkUgQ0FMTExFRAojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKI0Z1bmN0aW9ucyBhcmUgbmFtZWQgYXMgc3VjaCwgY2FsY3VsYXRlIAojY3JlYXRlcyB0aGUgYmxhbmsgSFRNTCBGaWxlCkNyZWF0ZUVtcHR5UmVwb3J0RmlsZQojYWRkIGluIEhUTUwgZm9ybWF0dGluZwpHZW5lcmF0ZVJlcG9ydEhUTUwKCiNjYWxjdWxhdGVzIHRoZSBwcm94eSBzZXR0aW5ncyBvbiB0aGUgZGV2aWNlCkNhbGN1bGF0ZVByb3h5SW5mb1RhYmxlUm93cwojYWRkcyBwcm94eSB0YWJsZSB3aXRoIGhlYWRlcnMgYW5kIGNvbnRlbnQgZnJvbSBwcmV2aW91cyBmdW5jdGlvbiB0byByZXBvcnQKQ3JlYXRlUHJveHlUYWJsZQojZ2V0IGFjdGl2ZSBpbnRlcmZhY2UgcHJveHkgZGV0YWlscyBmb3IgbmV0d29yayBxdWVyeQpnZXRQcm94eUFkZHJlc3MKZWNobyAiW0luZm9dIFJlcG9ydGVkIFByb3h5IEhvc3QgaXMgJHtQUk9YWV9IT1NUfToke1BST1hZX1BPUlR9IgoKI2NhbGN1bGF0ZSB0aGUgbmV0d29yayBjb25uZWN0aXZpdHkgCkNhbGN1bGF0ZUhvc3RJbmZvVGFibGVzCiNpbnNlcnRzIHRoZSBuZXR3b3JrIGNvbm5lY3Rpdml0eSBpbmZvcm1hdGlvbiB0byB0aGUgcmVwb3J0CmNyZWF0ZU5ldHdvcmtDaGVja1RhYmxlCiNjYWxjdWxhdGUgYWRkaXRpb25hbCBjaGVjayB2YWx1ZXMKY2FsY3VsYXRlQWRkaXRpb25hbENoZWNrcwojQWRkcyBhZGRpdGlvbmFsIGNoZWNrcyB0YWJsZQpjcmVhdGVBZGRpdGlvbmFsQ2hlY2tzSFRNTAojcHV0cyB0aGUgc2hhcmUgaWNvbiBhbmQgcGF0aCBhdCB0aGUgYm90dG9tIG9mIHRoZSByZXBvcnQKY3JlYXRlU2hhcmVSZXBvcnQKCiNjbGVhbiB1cCBQcm94eSBGaWxlCi9iaW4vcm0gJHtQUk9YWV9EQVRBX0xPQ0FUSU9OfQoKI29wZW4gLWEgIlNhZmFyaSIgIiR7UkVQT1JUX1BBVEh9IgplY2hvICdbRG9uZV0gRW52aXJvbm1lbnQgQ2hlY2tzIENvbXBsZXRlJwplY2hvICJbYWNrbm93bGVkZ2VtZW50XSBIb3N0IGxpc3RpbmdzIHByb3ZpZGVkIGJ5IEFwcGxlLCBJbmMuIChQdWJsaWMgS0IpIgplY2hvICJbYWNrbm93bGVkZ2VtZW50XSBJY29uIHBsYW5lIGJ5IEp1YW4gR2FyY2VzIGZyb20gdGhlIE5vdW4gUHJvamVjdCwgbGljZW5zZWQgdW5kZXIgQ3JlYXRlIENvbW1vbnMgKGNjKSIKCiNHZXQgdGhlIHNlcmlhbCBudW1iZXIgb2YgdGhlIG1hYyBydW5uaW5nIHRoaXMgc2NyaXB0LgpzZXJpYWxOdW1iZXI9JChzeXN0ZW1fcHJvZmlsZXIgU1BIYXJkd2FyZURhdGFUeXBlIHwgYXdrICcvU2VyaWFsIE51bWJlci97cHJpbnQgJDR9JykKCiNVc2UgdGhlIEFQSSB0byBnZXQgQ29tcHV0ZXIgSUQKY29tcHV0ZXJJRD0kKGN1cmwgLXN1ICIkYXBpVXNlcm5hbWUiOiIkYXBpUGFzc3dvcmQiIC1IICJBY2NlcHQ6IGFwcGxpY2F0aW9uL3htbCIgIiRhcGlVUkwiL0pTU1Jlc291cmNlL2NvbXB1dGVycy9zZXJpYWxudW1iZXIvIiRzZXJpYWxOdW1iZXIiIHwgeG1sbGludCAtLXhwYXRoICdjb21wdXRlci9nZW5lcmFsL2lkL3RleHQoKScgLSkKCgpmaWxlVG9VcGxvYWQ9JCgvYmluL2xzIC9Vc2Vycy9TaGFyZWQvIHwgZ3JlcCBNYWMpCgojIE5lZWQgdG8gdXBsb2FkICR7UkVQT1JUX1BBVEh9CmZpbGVUb1VwbG9hZD0kKC9iaW4vbHMgL1VzZXJzL1NoYXJlZCB8IGdyZXAgTWFjKQojY29tbWFuZCB0byB1cGxvYWQgdG8gSmFtZiBQcm8gU2VydmVyCmN1cmwgLXNma3UgIiRhcGlVc2VybmFtZSI6IiRhcGlQYXNzd29yZCIgIiRhcGlVUkwiL0pTU1Jlc291cmNlL2ZpbGV1cGxvYWRzL2NvbXB1dGVycy9pZC8kY29tcHV0ZXJJRCAtRiBuYW1lPUAvVXNlcnMvU2hhcmVkLyIkZmlsZVRvVXBsb2FkIiAtWCBQT1NUCgojQ2hlY2sgdG8gc3RhdHVzIG9mIHRoZSBmaWxlIHVwbG9hZAp1cGxvYWRTdGF0dXM9JD8KCiNVc2UgSmFtZiBIZWxwZXIgdG8gZGlzcGxheSBtZXNzYWdlIHRvIHVzZXIKaWYgWyAkdXBsb2FkU3RhdHVzICE9IDAgXTsgdGhlbgoJL3Vzci9sb2NhbC9iaW4vamFtZiBkaXNwbGF5TWVzc2FnZSAtbWVzc2FnZSAiVGhlIHN5c2RpYWdub3NlIGZpbGUgRkFJTEVEIHRvIHVwbG9hZCBzdWNjZXNzZnVsbHkgdG8geW91ciBjb21wdXRlciByZWNvcmQgb24gdGhlIEphbWYgUHJvIFNlcnZlci4gIFBsZWFzZSBjb250YWN0IHRoZSBJVCBEZXBhcnRtZW50IGZvciBhc3Npc3RhbmNlLiIKZWxzZQoJL3Vzci9sb2NhbC9iaW4vamFtZiBkaXNwbGF5TWVzc2FnZSAtbWVzc2FnZSAiVGhlIHN5c2RpYWdub3NlIGZpbGUgd2FzIHVwbG9hZGVkIHN1Y2Nlc3NmdWxseSB0byB5b3VyIGNvbXB1dGVyIHJlY29yZCBvbiB0aGUgSmFtZiBQcm8gU2VydmVyLiIKZmkKCiNVc2UgdXBsb2FkIGV4aXQgc3RhdHVzIHRvIGV4aXQgdGhlIHNjcmlwdCB3aXRoIDAgZm9yIHN1Y2Nlc3Mgb3IgMSBmb3IgZmFpbHVyZS4KCmlmIFsgJHVwbG9hZFN0YXR1cyAhPSAwIF07IHRoZW4KCWV4aXQgMQplbHNlCglleGl0IDAKZmkg</script_contents_encoded>
+</script>

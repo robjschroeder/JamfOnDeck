@@ -1,0 +1,866 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<script>
+    <name>Enrollment - Start DEPNotify</name>
+    <category>Enrollment</category>
+    <filename>Enrollment - Start DEPNotify</filename>
+    <info>Master script for DEPNotify used for Mac enrollments in Jamf</info>
+    <notes># Start DEPNotify Script
+#
+# Author: Alex Fajerman (alex.fajerman@insight.com)
+# Creation date: 2022-03-04
+# Last modified date: 2022-06-28</notes>
+    <priority>After</priority>
+    <parameters>
+        <parameter4>Fullscreen (true/false)</parameter4>
+        <parameter5>EnableNoSleep (true/false)</parameter5>
+    </parameters>
+    <os_requirements></os_requirements>
+    <script_contents>#!/usr/bin/env sh
+
+####################################################################################################
+#
+# This Insight Software is provided by Insight on an "AS IS" basis.
+#
+# INSIGHT MAKES NO WARRANTIES, EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION THE IMPLIED 
+# WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY, AND FITNESS FOR A PARTICULAR # PURPOSE, 
+# REGARDING THE INSIGHT SOFTWARE OR ITS USE AND OPERATION ALONE OR IN COMBINATION WITH YOUR 
+# PRODUCTS.
+#
+# IN NO EVENT SHALL INSIGHT BE LIABLE FOR ANY SPECIAL, INDIRECT, INCIDENTAL OR CONSEQUENTIAL 
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, 
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) ARISING IN ANY WAY OUT OF THE USE, REPRODUCTION, 
+# MODIFICATION AND/OR DISTRIBUTION OF THE INSIGHT SOFTWARE, HOWEVER, CAUSED AND WHETHER UNDER 
+# THEORY OF CONTRACT, TORT (INCLUDING NEGLIGENCE), STRICT LIABILITY OR OTHERWISE, EVEN IF INSIGHT 
+# HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+####################################################################################################
+#
+# Start DEPNotify Script
+#
+# Author: Alex Fajerman (alex.fajerman@insight.com)
+# Creation date: 2022-03-04
+# Last modified date: 2022-06-28
+#
+####################################################################################################
+#
+# DESCRIPTION
+#
+# Master script for DEPNotify used for Mac enrollments in Jamf.
+#
+####################################################################################################
+
+####################################################################################################
+# VARIABLES
+####################################################################################################
+# General
+Version=5.2
+Here=$(/usr/bin/dirname "$0")
+ScriptName=$(/usr/bin/basename "$0" | /usr/bin/awk -F "." '{print $1}')
+
+# Local System Info
+CurrentUser=$(scutil &lt;&lt;&lt; "show State:/Users/ConsoleUser" | awk '/Name :/ { print $3 }')
+SystemArch=$(/usr/bin/arch)
+SerialNumber=$(/usr/sbin/ioreg -c IOPlatformExpertDevice -d 2 | /usr/bin/awk '/IOPlatformSerialNumber/ { gsub(/\"/, ""); print $NF;}')
+
+# Log File
+EnrollmentLogFile="$ScriptName-$(date +"%Y-%m-%d").log"
+
+# Answer File
+AnswerFile="/Library/Managed Preferences/com.insight.answer.plist"
+
+####################################################################################################
+# JAMF BUILT-IN VARIABLES VALIDATION
+####################################################################################################
+# Fullscreen Mode
+if [[ "$4" != "" ]]; then
+	Fullscreen="$4"
+else
+	Fullscreen=true
+fi
+
+# No Sleep / Caffeinate Mode
+if [[ "$5" != "" ]]; then
+	EnableNoSleep="$5"
+else
+	EnableNoSleep=true
+fi
+
+####################################################################################################
+# ANSWER FILE FUNCTIONS, CONTROL &amp; VARIABLES
+####################################################################################################
+CheckAnswerFile() {
+	# Checks for the answer file. If it doesn't exist after 30 seconds, exits with error 1.
+	
+	Counter=0
+	FailCount=30
+	/bin/echo "Checking for answer file at ${AnswerFile}"
+	while [[ ! -e "${AnswerFile}"  ]]; do
+		/bin/sleep 1
+		Counter=$((Counter + 1))
+		if [[ "$Counter" = "$FailCount" ]]; then
+			/bin/echo "Waited $FailCount seconds for $AnswerFile, aborting with exit 1" "ERROR"
+			exit 1
+		fi
+	done
+	/bin/echo "Answer file found, proceeding"
+}
+
+GetAnswer() {
+	# Returns a single value from the answer file.
+	#
+	# NOTES
+	# - Other variables in this script can be called from the value in the answer file
+	# - Special character such as ; need to be escaped with a preceeding \ (ex: \;)
+	#
+	# PARAMETERS
+	# $1 = Section and optional subsection(s)
+	# - Example: OrgInfo
+	# $2 = Value to parse
+	# - Example: OrgName
+	#
+	# USAGE
+	# Example: OrgName=$(GetAnswer "OrgInfo" "OrgName")
+	
+	eval echo $(/usr/libexec/PlistBuddy -c "print :$1:$2" "$AnswerFile")
+}
+
+GetList() {
+	# Return a list of values from an array in the answer file.
+	#
+	# NOTES
+	# - Values in the array cannot contain variables
+	# - The variable called must be an array (see example below)
+	#
+	# PARAMETERS
+	# $1 = Section and optional subsection(s)
+	# - Example: EnrollmentScript:Policies
+	# $2 = List to parse
+	# - Example: PoliciesList
+	#
+	# USAGE
+	# Example: PoliciesList=($(GetList "EnrollmentScript:Policies" "PoliciesList"))
+	
+	declare -a List=($(/usr/libexec/PlistBuddy -c "print :$1:$2" "$AnswerFile" | sed -e 1d -e '$d'))
+	for i in "${List[@]}"; do
+		echo "${i[0]}" | awk '{print substr($0,5)}'
+	done
+}
+
+# Checks for the answer file.
+CheckAnswerFile
+
+# Sets the internal field separator to newline so answer file variables are properly parsed.
+IFS=$'\n'
+
+# Organization Info
+OrgName=$(GetAnswer "OrgInfo" "OrgName")
+JamfURL=$(GetAnswer "OrgInfo" "JamfURL")
+
+# Logging
+EnrollmentLogPath=$(GetAnswer "EnrollmentScript:Logging" "EnrollmentLogPath")
+
+# Jamf Binary
+JamfBinary=$(GetAnswer "EnrollmentScript:JamfBinary" "JamfBinary")
+JamfBinaryPath=$(GetAnswer "EnrollmentScript:JamfBinary" "JamfBinaryPath")
+
+# DEPNotify - Install Info
+DEPNotifyInstallPolicy=$(GetAnswer "EnrollmentScript:DEPNotify:InstallInfo" "DEPNotifyInstallPolicy")
+DEPNotifyPath=$(GetAnswer "EnrollmentScript:DEPNotify:InstallInfo" "DEPNotifyPath")
+DEPNotifyApp=$(GetAnswer "EnrollmentScript:DEPNotify:InstallInfo" "DEPNotifyApp")
+
+# DEPNotify - PreStage Files
+DEPNotifyScriptsPath=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyScriptsPath")
+DEPNotifyEnrollmentStartScript=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyEnrollmentStartScript")
+DEPNotifyEnrollmentInstallerError=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyEnrollmentInstallerError")
+DEPNotifyEnrollmentInstallerOut=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyEnrollmentInstallerOut")
+DEPNotifyLaunchDaemonPath=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyLaunchDaemonPath")
+DEPNotifyLaunchDaemonFile=$(GetAnswer "EnrollmentScript:DEPNotify:PreStageInfo" "DEPNotifyLaunchDaemonFile")
+
+# DEPNotify - Temp Files
+DEPNotifyTmpPath=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyTmpPath")
+DEPNotifyLogFile=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyLogFile")
+DEPNotifyDebugLogFile=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyDebugLogFile")
+DEPNotifyNewPlist=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyNewPlist")
+DEPNotifyDoneBOM=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyDoneBOM")
+DEPNotifyLogoutBOM=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyLogoutBOM")
+DEPNotifyRestartBOM=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyRestartBOM")
+DEPNotifyAgreeBOM=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyAgreeBOM")
+DEPNotifyRegistrationDoneBOM=$(GetAnswer "EnrollmentScript:DEPNotify:TempFiles" "DEPNotifyRegistrationDoneBOM")
+
+# Error Screen Branding
+ErrorBannerTitle=$(GetAnswer "EnrollmentScript:ErrorControl" "ErrorBannerTitle")
+ErrorMainText=$(GetAnswer "EnrollmentScript:ErrorControl" "ErrorMainText")
+ErrorStatus=$(GetAnswer "EnrollmentScript:ErrorControl" "ErrorStatus")
+
+# Computer Naming
+EnableSetComputerName=$(GetAnswer "EnrollmentScript:ComputerNaming" "EnableSetComputerName")
+ComputerNamePrefix=$(GetAnswer "EnrollmentScript:ComputerNaming" "ComputerNamePrefix")
+EnableCustomComputerName=$(GetAnswer "EnrollmentScript:ComputerNaming" "EnableCustomComputerName")
+CustomComputerNamesList=($(GetList "EnrollmentScript:ComputerNaming" "CustomComputerNamesList"))
+CustomComputerSerialsList=($(GetList "EnrollmentScript:ComputerNaming" "CustomComputerSerialsList"))
+
+# Appearance And Branding
+PolicyDefaultIcon=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "PolicyDefaultIcon")
+EnableCustomIcon=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "EnableCustomIcon")
+CustomIconLocation=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "CustomIconLocation")
+CustomIconDownloadPath=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "CustomIconDownloadPath")
+CustomIconDownloadFile=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "CustomIconDownloadFile")
+BannerTitle=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "BannerTitle")
+MainText=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "MainText")
+InitialStartStatus=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "InitialStartStatus")
+InstallCompleteText=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "InstallCompleteText")
+StatusTextAlignment=$(GetAnswer "EnrollmentScript:AppearanceAndBranding" "StatusTextAlignment")
+
+# Help Bubble
+EnableHelpBubble=$(GetAnswer "EnrollmentScript:HelpBubble" "EnableHelpButton")
+HelpContactName=$(GetAnswer "EnrollmentScript:HelpBubble" "HelpContactName")
+HelpContactInfo=$(GetAnswer "EnrollmentScript:HelpBubble" "HelpContactInfo")
+HelpBubbleTitle=$(GetAnswer "EnrollmentScript:HelpBubble" "HelpBubbleTitle")
+HelpBubbleBody=$(GetAnswer "EnrollmentScript:HelpBubble" "HelpBubbleBody")
+
+# Policies
+PoliciesList=($(GetList "EnrollmentScript:Policies" "PoliciesList"))
+
+# Jamf Connect
+ResetJamfConnectLogin=$(GetAnswer "EnrollmentScript:JamfConnect" "ResetJamfConnectLogin")
+
+# Stub Files
+EnableCreateStubFiles=$(GetAnswer "EnrollmentScript:StubFiles" "EnableCreateStubFiles")
+StubFilesList=($(GetList "EnrollmentScript:StubFiles" "StubFilesList"))
+
+# Jamf Recon
+UpdateUsernameInventoryRecord=$(GetAnswer "EnrollmentScript:JamfRecon" "UpdateUsernameInventoryRecord")
+
+# Script Completion
+RestartWhenDone=$(GetAnswer "EnrollmentScript:ScriptCompletion" "RestartWhenDone")
+
+# Script Completion - Restart
+CompletionRestartButtonText=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "CompletionRestartButtonText")
+CompletionRestartMainText=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "CompletionRestartMainText")
+EnableMDMRestart=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "EnableMDMRestart")
+MDMRestartCommandPolicy=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "MDMRestartCommandPolicy")
+EnableRestartTimer=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "EnableRestartTimer")
+RestartTimer=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "RestartTimer")
+RestartTimerText=$(GetAnswer "EnrollmentScript:ScriptCompletion:Restart" "RestartTimerText")
+
+# Script Completion - Quit
+CompletionQuitButtonText=$(GetAnswer "EnrollmentScript:ScriptCompletion:Quit" "CompletionQuitButtonText")
+CompletionQuitMainText=$(GetAnswer "EnrollmentScript:ScriptCompletion:Quit" "CompletionQuitMainText")
+
+####################################################################################################
+# FUNCTIONS
+####################################################################################################
+GetTimestamp() {
+	# Timestamp function. Used to echo the date/time to the DEPNotify debug log file.
+	
+	if [[ $1 == "START" ]]; then
+		TimestampInfo="START"
+	elif [[ $1 == "INFO" ]]; then
+		TimestampInfo="INFO"
+	elif [[ $1 == "WARN" ]]; then
+		TimestampInfo="WARN"
+	elif [[ $1 == "ERROR" ]]; then
+		TimestampInfo="ERROR"
+	elif [[ $1 == "DEBUG" ]]; then
+		TimestampInfo="DEBUG"
+	elif [[ $1 == "FINISH" ]]; then
+		TimestampInfo="FINISH"
+	elif [[ $1 == "TEST" ]]; then
+		TimestampInfo="TEST"
+	else
+		TimestampInfo="INFO"
+	fi
+	echo $(date +"[[%b %d, %Y %Z %T $TimestampInfo]]: ")
+}
+
+Logging() {
+	# Logging function. Used to write actions to the enrollment log file.
+	#
+	# PARAMETERS
+	# $1 = Text to write to the log
+	# - Example: This is a test
+	# $2 = (optional) Info level for the log entry; default is INFO
+	# - Example: WARN
+	#
+	# USAGE
+	# Example: Logging "This is a test" "WARN"
+	
+	
+	if [[ $2 == "START" ]]; then
+		LogInfo="START"
+	elif [[ $2 == "INFO" ]]; then
+		LogInfo="INFO"
+	elif [[ $2 == "WARN" ]]; then
+		LogInfo="WARN"
+	elif [[ $2 == "ERROR" ]]; then
+		LogInfo="ERROR"
+	elif [[ $2 == "DEBUG" ]]; then
+		LogInfo="DEBUG"
+	elif [[ $2 == "FINISH" ]]; then
+		LogInfo="FINISH"
+	elif [[ $1 == "TEST" ]]; then
+		LogInfo="TEST"
+	else
+		LogInfo="INFO"
+	fi
+	printf "$(date +"[[%b %d, %Y %Z %T $LogInfo]]: ")$1\n" &gt;&gt; "$EnrollmentLogPath/$EnrollmentLogFile"
+}
+
+GetCurrentUser() {
+	# Return the current user's username.
+	
+	/bin/echo "show State:/Users/ConsoleUser" | /usr/sbin/scutil | /usr/bin/awk '/Name :/ &amp;&amp; ! /loginwindow/ {print $3}'
+}
+
+GetCurrentUserUID() {
+	# Return the current user's UID.
+	
+	/bin/echo $(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/grep "$(GetCurrentUser)" | /usr/bin/awk '{print $2}' | /usr/bin/sed -e 's/^[ \t]*//')
+}
+
+GetRealName() {
+	# Returns the current user's real name.
+	
+	/bin/echo $(id -P $(GetCurrentUser) | cut -d : -f 8)
+}
+
+LoggingHeader() {
+	# Creates the enrollment log header.
+	
+	Logging "" "START"
+	Logging "--- START DEVICE ENROLLMENT LOG ---" "START"
+	Logging "" "START"
+	Logging "$ScriptName Version $Version" "START"
+	Logging "Answer File: $AnswerFile"
+	Logging "" "START"
+}
+
+LoggingFooter() {
+	# Creates the enrollment log footer.
+	
+	Logging "" "FINISH"
+	Logging "--- FINISH DEVICE ENROLLMENT LOG ---" "FINISH"
+	Logging "" "FINISH"
+}
+
+GetTimerNoun() {
+	# Prettified return for printing out "1 second" or "&gt;1 seconds".
+	
+	if [[ $1 == 1 ]]; then
+		echo "$1 second"
+	else
+		echo "$1 seconds"
+	fi
+}
+
+ValidateTrueFalseFlags() {
+	# Validates true/false flags that are set in this script's parameters in the Jamf policy.
+	
+	if [[ "$Fullscreen" != true ]] &amp;&amp; [[ "$Fullscreen" != false ]]; then
+		/bin/echo "$(GetTimestamp "DEBUG") Fullscreen configuration not set properly. Currently set to $Fullscreen. Please update to true or false." &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyDebugLogFile"
+		Logging "Fullscreen configuration not set properly. Currently set to $Fullscreen. Please update to true or false." "DEBUG"
+		exit 1
+	fi
+	
+	if [[ "$EnableNoSleep" != true ]] &amp;&amp; [[ "$EnableNoSleep" != false ]]; then
+		/bin/echo "$(GetTimestamp "DEBUG") Enable No Sleep configuration not set properly. Currently set to $EnableNoSleep. Please update to true or false." &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyDebugLogFile"
+		Logging "Enable No Sleep configuration not set properly. Currently set to $EnableNoSleep. Please update to true or false." "DEBUG"
+		exit 1
+	fi
+}
+
+GetSetupAssistantProcess() {
+	# Waits for Setup Assisant to finish before continuing.
+	
+	ProcessName="Setup Assistant"
+	SetupAssistantProcess=""
+	SleepTimer=5
+	Logging "Checking to see if $ProcessName is running"
+	
+	while [[ $SetupAssistantProcess != "" ]]; do
+		Logging "$ProcessName still running  PID: $SetupAssistantProcess"
+		Logging "Sleeping $(GetTimerNoun $SleepTimer)"
+		/bin/sleep $SleepTimer
+		SetupAssistantProcess=$(/usr/bin/pgrep -l "$ProcessName")
+	done
+	Logging "$ProcessName finished"
+}
+
+WaitForCurrentUser() {
+	# Checks the current user's UID and username; if UID is less than 501 or the username is blank, loops and waits until the user is logged in. Once the UID is equal to or greater than 501 or the username is present, this script proceeds. This is to prevent a scenario where a system account such as SetupAssistant is still doing stuff and DEPNotify tries to start.
+	
+	CurrentUserUID=$(GetCurrentUserUID)
+	while [[ $CurrentUserUID -lt 501 || $(GetCurrentUser) == "" ]]; do
+		Logging "User is not logged in, waiting"
+		/bin/sleep 5
+		CurrentUserUID=$(GetCurrentUserUID)
+	done
+	Logging "Current user: $(GetCurrentUser) with UID $(GetCurrentUserUID)"
+}
+
+GetFinderProcess() {
+	# Checks to see if the Finder is running yet. If it is, continue. Nice for instances where the user is not setting up a username during the Setup Assistant process.
+	
+	Logging "Checking to see if the Finder process is running"
+	FinderProcess=$(/usr/bin/pgrep -l "Finder" 2&gt;/dev/null)
+	Response=$?
+	Logging "Finder PID: $FinderProcess"
+	while [[ $Response -ne 0 ]]; do
+		Logging "Finder PID not found. Assuming device is sitting at the login window"
+		/bin/sleep 1
+		FinderProcess=$(/usr/bin/pgrep -l "Finder" 2&gt;/dev/null)
+		Response=$?
+		if [[ $FinderProcess != "" ]]; then
+			Logging "Finder PID: $FinderProcess"
+		fi
+	done
+}
+
+CheckForAppleSilicon() {
+	# Checks the CPU architecture and installs Rosetta2 if the Mac is on Apple Silicon.
+	
+	Logging "Checking for Apple Silicon"
+	if [[ "$SystemArch" == "arm64" ]]; then
+		Logging "Running on Apple Silicon"
+		Logging "Installing Rosetta 2 for compatibility with Intel-based apps"
+		/usr/sbin/softwareupdate --install-rosetta --agree-to-license
+	else
+		Logging "Not on Apple Silicon, skipping Rosetta 2"
+	fi
+}
+
+CheckForDEPNotify() {
+	# Checks to ensure that DEPNotify is installed before moving on to the next step
+	# If it is not installed, attempts to reinstall it by downloading and installing it via Jamf policy.
+	# If DEPNotify cannot be installed via policy, this script will exit after 30 seconds of waiting.
+	
+	Counter=0
+	FailCount=30
+	WaitTimer=5
+	Logging "Making sure DEPNotify is installed"
+	while [[ ! -e "${DEPNotifyPath}/${DEPNotifyApp}" ]]; do
+		Logging "DEPNotify has not been installed yet"
+		if [[ ! -e "${DEPNotifyPath}/${DEPNotifyApp}" ]] &amp;&amp; [[ "$Counter" -eq $WaitTimer ]]; then
+			# If DEPNotify is not installed, attempt to install it via Jamf policy
+			
+			Logging "Waited $(GetTimerNoun $WaitTimer) for DEPNotify"
+			Logging "Downloading and installing DEPNotify via Jamf policy ${DEPNotifyInstallPolicy}"
+			"$JamfBinaryPath/$JamfBinary" policy -event "${DEPNotifyInstallPolicy}"
+		fi
+		Logging "Waiting $(GetTimerNoun 1) before checking again"
+		/bin/sleep 1
+		Counter=$((Counter + 1))
+		if [[ "$Counter" = "$FailCount" ]]; then
+			Logging "We waited $(GetTimerNoun $FailCount), it did not install, aborting with exit 1" "ERROR"
+			exit 1
+		fi
+	done
+	Logging "Found DEPNotify at ${DEPNotifyPath}/${DEPNotifyApp}"
+}
+
+CheckForDEPNotifyBOMs() {
+	# Checks and Warnings if BOM files exist.
+	
+	Logging "Script testing check"
+	if [[ (-f "$DEPNotifyTmpPath/$DEPNotifyLogFile" || -f "$DEPNotifyTmpPath/$DEPNotifyDoneBOM") ]]; then
+		/bin/echo "$(GetTimestamp "ERROR") Config files were found in /var/tmp. Letting user know and exiting." &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyDebugLogFile"
+		mv "$DEPNotifyTmpPath/$DEPNotifyLogFile" "$DEPNotifyTmpPath/depnotify_old.log"
+		/bin/echo "Command: MainTitle: $ErrorBannerTitle" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		/bin/echo "Command: MainText: $ErrorMainText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		/bin/echo "Status: $ErrorStatus" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		sudo -u "$(GetCurrentUser)" open -a "${DEPNotifyPath}/${DEPNotifyApp}" --args -path "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		/bin/sleep 5
+		exit 1
+	fi
+}
+
+GeneratePlistConfig() {
+	# Creates the .plist for DEPNotify to use for various extra settings.
+	
+	DEPNotifyConfigPlist="/Users/$(GetCurrentUser)/Library/Preferences/menu.nomad.DEPNotify.plist"
+	Logging "DEPNotify preferences file will be stored at $DEPNotifyConfigPlist"
+	
+	# Writes settings for status text alignment.
+	Logging "Plist Setting: Setting statusTextAlignment to $StatusTextAlignment"
+	defaults write "$DEPNotifyConfigPlist" statusTextAlignment "$StatusTextAlignment"
+	
+	# Writes settings for the help bubble.
+	if [[ "$EnableHelpBubble" == true ]]; then
+		Logging "Plist Setting: Setting help bubble options"
+		defaults write "$DEPNotifyConfigPlist" helpBubble -array-add "$HelpBubbleTitle"
+		defaults write "$DEPNotifyConfigPlist" helpBubble -array-add "$HelpBubbleBody"
+	fi
+	
+	# Sets ownership and permissions of the .plist.
+	Logging "Setting ownership and permissions of $DEPNotifyConfigPlist"
+	chown "$(GetCurrentUser)":staff "$DEPNotifyConfigPlist"
+	chmod 600 "$DEPNotifyConfigPlist"
+}
+
+SetComputerName() {
+	# Sets the computer name. EnableSetComputerName must be set to true in the answer file; otherwise, no name is set.
+	#
+	# If EnableSetComputerName is true, the following logic applies:
+	# - EnableCustomComputerName
+	#		false: Set the name to PrefixSerialNumber
+	#		true: Check the CustomComputerSerialsList and CustomComputerNamesList arrays for a match and rename if found
+
+	if [[ $EnableSetComputerName == true ]]; then
+		# Setting a custom name.
+		if [[ $EnableCustomComputerName == true ]]; then
+			Logging "Custom naming enabled, checking Mac serial number $SerialNumber"
+		
+			# Check the list of known serials for a match.
+			for i in "${!CustomComputerSerialsList[@]}"; do
+				if [[ " ${CustomComputerSerialsList[$i]} " =~ " $SerialNumber " ]]; then
+					Logging "Serial $SerialNumber found in custom names list"
+					MatchFound=true
+					break
+				else
+					MatchFound=false
+				fi
+			done
+			
+			if [[ $MatchFound == true ]]; then
+				# Mac SN is in the list, checking to see if there's a corresponding name.
+				if [[ ${CustomComputerNamesList[$i]} = "" ]]; then
+					Logging "Serial/name match not found"
+					MacName="$ComputerNamePrefix$SerialNumber"
+				else
+					MacName="${CustomComputerNamesList[$i]}"
+					Logging "Serial/name match found ($SerialNumber, $MacName)"
+				fi
+			else
+				# Mac SN not matched, using the default naming scheme.
+				Logging "No match, defaulting to $ComputerNamePrefix$SerialNumber"
+				MacName="$ComputerNamePrefix$SerialNumber"
+			fi
+		else
+			Logging "Custom Mac naming not enabled, setting name to $ComputerNamePrefix$SerialNumber"
+			MacName="$ComputerNamePrefix$SerialNumber"
+		fi
+		Logging "Setting computer name to $MacName"
+		
+		# Set the computer name using scutil.
+		/usr/sbin/scutil --set ComputerName "$MacName"
+		/usr/sbin/scutil --set LocalHostName "$MacName"
+		/usr/sbin/scutil --set HostName "$MacName"
+	
+		# Set the computer name using Jamf binary.
+		"$JamfBinaryPath/$JamfBinary" setComputerName -name "$MacName"
+		Return="$?"
+	
+		if [[ "$Return" -ne 0 ]]; then
+			# Naming failed.
+			Logging "Failed to set computer name with Jamf name command"
+			ReturnCode="$Return"
+		fi
+	
+		# Flush DNS cache.
+		dscacheutil -flushcache
+	else
+		Logging "Not setting the computer name"
+	fi
+}
+
+CustomBranding() {
+	# Sets up branding for the DEPNotify window.
+	
+	Logging "Setting up branding for banner image, banner title and main text"
+	if [[ "$EnableCustomIcon" == true ]]; then
+		Logging "Using a custom icon"
+		if [[ $CustomIconLocation = http* ]]; then
+			Logging "Icon location is a URL"
+			if [[ ! -d "$CustomIconDownloadPath" ]]; then
+				Logging "$CustomIconDownloadPath not found, creating"
+				mkdir -p "$CustomIconDownloadPath"
+			fi
+			Logging "Grabbing icon from $CustomIconLocation"
+			curl -L -o "$CustomIconDownloadPath/$CustomIconDownloadFile" $CustomIconLocation
+			if [[ -s "$CustomIconDownloadPath/$CustomIconDownloadFile" ]]; then
+				Logging "Custom icon successfully dowloaded to $CustomIconDownloadPath/$CustomIconDownloadFile"
+				PolicyDefaultIcon="$CustomIconDownloadPath/$CustomIconDownloadFile"
+			else
+				Logging "File is empty, deleting and using default $PolicyDefaultIcon"
+				sudo rm -f "${CustomIconPath}/${CustomIconFile}"
+			fi
+		elif [[ $CustomIconLocation = /* ]]; then
+			Logging "Icon is local"
+			PolicyDefaultIcon="$CustomIconLocation"
+		else
+			Logging "Custom icon location is invalid, using $PolicyDefaultIcon"
+		fi
+	else
+		Logging "Not using a custom icon, using $PolicyDefaultIcon"
+	fi
+	/bin/echo "Command: Image: $PolicyDefaultIcon" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	/bin/echo "Command: MainTitle: $BannerTitle" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	/bin/echo "Command: MainText: $MainText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+}
+
+LaunchDEPNotify() {
+	# Opens the DEPNotiy app after initial configuration.
+	
+	Logging "Removing the quarantine bit from the DEPNotify app"
+	sudo xattr -r -d com.apple.quarantine "${DEPNotifyPath}/${DEPNotifyApp}"
+	Logging "Opening DEPNotify as user $(GetCurrentUser)"
+	if [[ "$Fullscreen" == true ]]; then
+		sudo -u "$(GetCurrentUser)" /usr/bin/open -a "${DEPNotifyPath}/${DEPNotifyApp}" --args -path "$DEPNotifyTmpPath/$DEPNotifyLogFile" -fullScreen
+	elif [[ "$Fullscreen" == false ]]; then
+		sudo -u "$(GetCurrentUser)" /usr/bin/open -a "${DEPNotifyPath}/${DEPNotifyApp}" --args -path "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	fi
+}
+
+GetDEPNotifyProcess() {
+	# Grab sthe DEPNotify PID and caffeinates it.
+	
+	DEPNotifyProcess=$(pgrep -l "DEPNotify" | cut -d " " -f1)
+	until [[ "$DEPNotifyProcess" != "" ]]; do
+		Logging "Waiting for DEPNotify to start to gather the process ID"
+		/bin/echo "$(GetTimestamp) Waiting for DEPNotify to start to gather the process ID" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyDebugLogFile"
+		/bin/sleep 1
+		DEPNotifyProcess=$(pgrep -l "DEPNotify" | cut -d " " -f1)
+	done
+	if [[ "$EnableNoSleep" == true ]]; then
+		Logging "Caffeinating DEPNotify process (PID: $DEPNotifyProcess)"
+		caffeinate -disu -w "$DEPNotifyProcess" &amp;
+	fi
+}
+
+PrettyPause() {
+	# Adds an initial status text and a brief pause for prettiness.
+	
+	/bin/echo "Status: $InitialStartStatus" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	/bin/sleep 3
+}
+
+GenerateStatusBar() {
+	# Sets up the status bar.
+	
+	# Increments the status counter by 1 to account for the Jamf recon that runs at the end of this script.
+	AdditionalOptionsCounter=1
+	AdditionalOptionsCounter=$((AdditionalOptionsCounter++))
+	
+	# Checks the policy array and adds the count from the additional options above.
+	PoliciesListLength="$((${#PoliciesList[@]} + AdditionalOptionsCounter))"
+	/bin/echo "Command: Determinate: $PoliciesListLength" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+}
+
+RunJamfPolicies() {
+	# Installs policies by looping through the policy array.
+	
+	Logging "--- START POLICIES ---"
+	Logging "Preparing to run Jamf policies"
+	for policy in "${PoliciesList[@]}"; do
+		PolicyStatus=$(/bin/echo "$policy" | cut -d ',' -f1)
+		PolicyType=$(/bin/echo "$policy" | cut -d ',' -f2)
+		PolicyName=$(/bin/echo "$policy" | cut -d ',' -f3)
+		PolicyIcon=$(/bin/echo "$policy" | cut -d ',' -f4)
+		Logging "-------------------------"
+		Logging "Calling policy $PolicyStatus"
+		Logging "Policy type is: $PolicyType"
+		/bin/echo "Status: $PolicyStatus" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		if [[ "$PolicyIcon" = "" ]] || [[ ! -f "$PolicyIcon" ]]; then
+			# Icon path/file is either not set or not found; set to PolicyDefaultIcon.
+			/bin/echo "Command: Image: $PolicyDefaultIcon" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		else
+			# Icon found
+			/bin/echo "Command: Image: $PolicyIcon" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		fi
+		if [[ $PolicyType = "event" ]]; then
+			"$JamfBinaryPath/$JamfBinary" policy -event "$PolicyName" | /usr/bin/sed -e "s/^/$(GetTimestamp) /" | /usr/bin/tee -a "$EnrollmentLogPath/$EnrollmentLogFile" &gt;/dev/null 2&gt;&amp;1
+		elif [[ $PolicyType = "id" ]]; then
+			"$JamfBinaryPath/$JamfBinary" policy -id "$PolicyName" | /usr/bin/sed -e "s/^/$(GetTimestamp) /" | /usr/bin/tee -a "$EnrollmentLogPath/$EnrollmentLogFile" &gt;/dev/null 2&gt;&amp;1
+		else
+			Logging "Invalid policy type or no policy type specified"
+		fi
+	done
+	Logging "--- END POLICIES ---"
+}
+
+CheckJamfConnectLoginWindow() {
+	# Resets the login window to macOS default if ResetJamfConnectLogin is true and Jamf Connect is installed.
+
+	if [[ "$ResetJamfConnectLogin" == true ]]; then
+		if [[ -e "$AuthchangerBinary" ]]; then
+			Logging "Invoking Jamf Connect authchanger and resetting login window to macOS default"
+			"$AuthchangerBinary" -reset
+		else
+			Logging "ResetJamfConnectLogin is set to true but authchanger binary not found at $AutchangerBinary"
+		fi
+	fi
+}
+
+CreateStubFiles() {
+	# Create stub files based on the StubFilesList array.
+	
+	Logging "Stub Files Creation"
+	if [[ "$EnableCreateStubFiles" == true ]]; then
+		for File in "${StubFilesList[@]}"; do
+			Logging "Creating stub file $File"
+			/usr/bin/touch "${File}"
+		done
+	fi
+}
+
+JamfCheckIn() {
+	# Forces the Mac to check in to Jamf and submit inventory.
+	
+	/bin/echo "Status: Submitting device inventory to Jamf" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	if [[ "$UpdateUsernameInventoryRecord" == true ]]; then
+		Logging "Submitting device inventory to Jamf and updating the Mac's record with username and real name info"
+		"$JamfBinaryPath/$JamfBinary" recon -endUsername "$(GetCurrentUser)" -realname "$(GetRealName)"
+	else
+		Logging "Submitting device inventory to Jamf"
+		"$JamfBinaryPath/$JamfBinary" recon
+	fi
+}
+
+ScriptCompletion() {
+	# Sets script completion text, button and restart behaviors.
+
+	/bin/echo "Status: $InstallCompleteText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	if [[ "$RestartWhenDone" == true ]]; then
+		if [[ "$EnableRestartTimer" == true ]]; then
+			Logging "Script Completion: Automatic Restart with $(GetTimerNoun $RestartTimer) delay"
+			/bin/echo "Command: MainText: $RestartTimerText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+			Timer=$RestartTimer
+			until [[ $Timer = 0 ]]; do
+				if [[ $Timer = 1 ]]; then
+					/bin/echo "Status: Restarting in $(GetTimerNoun $Timer)" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+					/bin/sleep 1
+				else
+					/bin/echo "Status: Restarting in $(GetTimerNoun $Timer)" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+					/bin/sleep 1
+				fi
+				Timer=$((Timer-1))
+			done
+			touch "$DEPNotifyTmpPath/$DEPNotifyDoneBOM"
+			/bin/echo "Command: Quit" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		else
+			Logging "Script Completion: Restart with Button"
+			touch "$DEPNotifyTmpPath/$DEPNotifyDoneBOM"
+			/bin/echo "Command: MainText: $CompletionRestartMainText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+			/bin/echo "Command: ContinueButton: $CompletionRestartButtonText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		fi
+		Logging "Setting up restart behavior"
+		if [[ "$EnableMDMRestart" == true ]]; then
+			Logging "Restart Command: Jamf policy $MDMRestartCommandPolicy"
+		else
+			Logging "Restart Command: shutdown -r now"
+		fi
+	else
+		Logging "Script Completion: Quit Button with Label"
+		touch "$DEPNotifyTmpPath/$DEPNotifyDoneBOM"
+		/bin/echo "Command: MainText: $CompletionQuitMainText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+		/bin/echo "Command: ContinueButton: $CompletionQuitButtonText" &gt;&gt; "$DEPNotifyTmpPath/$DEPNotifyLogFile"
+	fi
+}
+
+DEPNotifyCleanup() {
+	# Removes the files and directories left behind by DEPNotify once the Mac setup is complete.
+	
+	Logging "--- START DEPNOTIFY CLEANUP ---"
+
+	# Waits for the DEPNotify window to close.
+	while [[ ! -f "$DEPNotifyTmpPath/$DEPNotifyLogoutBOM" ]] || [[ ! -f "$DEPNotifyTmpPath/$DEPNotifyDoneBOM" ]]; do
+		Logging "DEPNotify Cleanup: Waiting for Completion file"
+		Logging "DEPNotify Cleanup: The user has not closed the DEPNotify window"
+		Logging "DEPNotify Cleanup: Waiting $(GetTimerNoun 1)"
+		/bin/sleep 1
+		if [[ -f "$DEPNotifyTmpPath/$DEPNotifyDoneBOM" ]]; then
+			Logging "DEPNotify Cleanup: Found $DEPNotifyTmpPath/$DEPNotifyDoneBOM"
+			break
+		fi
+		if [[ -f "$DEPNotifyTmpPath/$DEPNotifyLogoutBOM" ]]; then
+			Logging "DEPNotify Cleanup: Found $DEPNotifyTmpPath/$DEPNotifyLogoutBOM"
+			break
+		fi
+	done
+	
+	# Removes the DEPNotify LaunchDaemon.
+	if [[ -e "$DEPNotifyLaunchDaemonPath/$DEPNotifyLaunchDaemonFile" ]]; then
+		Logging "DEPNotify Cleanup: Removing LaunchDaemon"
+		launchctl bootout system "$DEPNotifyLaunchDaemonPath/$DEPNotifyLaunchDaemonFile"
+		/bin/rm -R "$DEPNotifyLaunchDaemonPath/$DEPNotifyLaunchDaemonFile"
+	else
+		Logging "DEPNotify Cleanup: LaunchDaemon not installed"
+	fi
+		
+	# Loops through and remove all files associated with DEPNotify.	
+	for i in \
+		"$DEPNotifyPath/$DEPNotifyApp" \
+		"$DEPNotifyScriptsPath/$DEPNotifyEnrollmentStartScript" \
+		"$DEPNotifyScriptsPath/$DEPNotifyEnrollmentInstallerError" \
+		"$DEPNotifyScriptsPath/$DEPNotifyEnrollmentInstallerOut" \
+		"$DEPNotifyTmpPath/$DEPNotifyLogFile" \
+		"$DEPNotifyTmpPath/$DEPNotifyDebugLogFile" \
+		"/Users/$(GetCurrentUser)/Library/Preferences/$DEPNotifyNewPlist" \
+		"$DEPNotifyTmpPath/$DEPNotifyDoneBOM" \
+		"$DEPNotifyTmpPath/$DEPNotifyLogoutBOM" \
+		"$DEPNotifyTmpPath/$DEPNotifyRestartBOM" \
+		"$DEPNotifyTmpPath/$DEPNotifyAgreeBOM" \
+		"$DEPNotifyTmpPath/$DEPNotifyRegistrationDoneBOM"; do
+			Logging "Checking for $i"
+			if [[ -e "$i" ]] || [[ -d "$i" ]]; then
+				# Removes DEPNotify objects if they exist.
+				Logging "DEPNotify Cleanup: Attempting to remove $i"
+				/bin/rm -R "$i"
+				Return="$?"
+				if [[ "$Return" -ne 0 ]]; then
+					# Logs that an error occured while removing an object.
+					Logging "DEPNotify Cleanup: Unable to remove $i" "ERROR"
+					return "$Return"
+				fi
+			else
+				# File or directory not found.				
+				Logging "DEPNotify Cleanup: $i not found" "INFO"
+			fi
+		done
+	Logging "--- END DEPNOTIFY CLEANUP ---"
+}
+
+RestartCommand() {
+	# Performs an MDM command restart if RestartWhenDone is true.
+	# If EnableMDMRestart is set, calls the specified policy to perform the MDM restart; otherwise, performs a regular restart.
+	
+	if [[ "$RestartWhenDone" == true ]]; then
+		if [[ "$EnableMDMRestart" == true ]]; then
+			"$JamfBinaryPath/$JamfBinary" policy -event "$MDMRestartCommandPolicy"
+		else
+			sudo shutdown -r now
+		fi
+	fi
+}
+
+####################################################################################################
+# MAIN
+####################################################################################################
+LoggingHeader
+CheckForAppleSilicon
+ValidateTrueFalseFlags
+GetSetupAssistantProcess
+WaitForCurrentUser
+GetFinderProcess
+CheckForDEPNotify
+CheckForDEPNotifyBOMs
+GeneratePlistConfig
+SetComputerName
+CustomBranding
+LaunchDEPNotify
+GetDEPNotifyProcess
+GenerateStatusBar
+PrettyPause
+RunJamfPolicies
+CheckJamfConnectLoginWindow
+CreateStubFiles
+JamfCheckIn
+ScriptCompletion
+DEPNotifyCleanup
+LoggingFooter
+RestartCommand
+
+exit 0	# Success
+exit 1	# Failure</script_contents>
+    <script_contents_encoded>IyEvdXNyL2Jpbi9lbnYgc2gKCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIwojIFRoaXMgSW5zaWdodCBTb2Z0d2FyZSBpcyBwcm92aWRlZCBieSBJbnNpZ2h0IG9uIGFuICJBUyBJUyIgYmFzaXMuCiMKIyBJTlNJR0hUIE1BS0VTIE5PIFdBUlJBTlRJRVMsIEVYUFJFU1MgT1IgSU1QTElFRCwgSU5DTFVESU5HIFdJVEhPVVQgTElNSVRBVElPTiBUSEUgSU1QTElFRCAKIyBXQVJSQU5USUVTIE9GIE5PTi1JTkZSSU5HRU1FTlQsIE1FUkNIQU5UQUJJTElUWSwgQU5EIEZJVE5FU1MgRk9SIEEgUEFSVElDVUxBUiAjIFBVUlBPU0UsIAojIFJFR0FSRElORyBUSEUgSU5TSUdIVCBTT0ZUV0FSRSBPUiBJVFMgVVNFIEFORCBPUEVSQVRJT04gQUxPTkUgT1IgSU4gQ09NQklOQVRJT04gV0lUSCBZT1VSIAojIFBST0RVQ1RTLgojCiMgSU4gTk8gRVZFTlQgU0hBTEwgSU5TSUdIVCBCRSBMSUFCTEUgRk9SIEFOWSBTUEVDSUFMLCBJTkRJUkVDVCwgSU5DSURFTlRBTCBPUiBDT05TRVFVRU5USUFMIAojIERBTUFHRVMgKElOQ0xVRElORywgQlVUIE5PVCBMSU1JVEVEIFRPLCBQUk9DVVJFTUVOVCBPRiBTVUJTVElUVVRFIEdPT0RTIE9SIFNFUlZJQ0VTOyBMT1NTIE9GIFVTRSwgCiMgREFUQSwgT1IgUFJPRklUUzsgT1IgQlVTSU5FU1MgSU5URVJSVVBUSU9OKSBBUklTSU5HIElOIEFOWSBXQVkgT1VUIE9GIFRIRSBVU0UsIFJFUFJPRFVDVElPTiwgCiMgTU9ESUZJQ0FUSU9OIEFORC9PUiBESVNUUklCVVRJT04gT0YgVEhFIElOU0lHSFQgU09GVFdBUkUsIEhPV0VWRVIsIENBVVNFRCBBTkQgV0hFVEhFUiBVTkRFUiAKIyBUSEVPUlkgT0YgQ09OVFJBQ1QsIFRPUlQgKElOQ0xVRElORyBORUdMSUdFTkNFKSwgU1RSSUNUIExJQUJJTElUWSBPUiBPVEhFUldJU0UsIEVWRU4gSUYgSU5TSUdIVCAKIyBIQVMgQkVFTiBBRFZJU0VEIE9GIFRIRSBQT1NTSUJJTElUWSBPRiBTVUNIIERBTUFHRS4KIwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMKIyBTdGFydCBERVBOb3RpZnkgU2NyaXB0CiMKIyBBdXRob3I6IEFsZXggRmFqZXJtYW4gKGFsZXguZmFqZXJtYW5AaW5zaWdodC5jb20pCiMgQ3JlYXRpb24gZGF0ZTogMjAyMi0wMy0wNAojIExhc3QgbW9kaWZpZWQgZGF0ZTogMjAyMi0wNi0yOAojCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIwojIERFU0NSSVBUSU9OCiMKIyBNYXN0ZXIgc2NyaXB0IGZvciBERVBOb3RpZnkgdXNlZCBmb3IgTWFjIGVucm9sbG1lbnRzIGluIEphbWYuCiMKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIFZBUklBQkxFUwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgR2VuZXJhbApWZXJzaW9uPTUuMgpIZXJlPSQoL3Vzci9iaW4vZGlybmFtZSAiJDAiKQpTY3JpcHROYW1lPSQoL3Vzci9iaW4vYmFzZW5hbWUgIiQwIiB8IC91c3IvYmluL2F3ayAtRiAiLiIgJ3twcmludCAkMX0nKQoKIyBMb2NhbCBTeXN0ZW0gSW5mbwpDdXJyZW50VXNlcj0kKHNjdXRpbCA8PDwgInNob3cgU3RhdGU6L1VzZXJzL0NvbnNvbGVVc2VyIiB8IGF3ayAnL05hbWUgOi8geyBwcmludCAkMyB9JykKU3lzdGVtQXJjaD0kKC91c3IvYmluL2FyY2gpClNlcmlhbE51bWJlcj0kKC91c3Ivc2Jpbi9pb3JlZyAtYyBJT1BsYXRmb3JtRXhwZXJ0RGV2aWNlIC1kIDIgfCAvdXNyL2Jpbi9hd2sgJy9JT1BsYXRmb3JtU2VyaWFsTnVtYmVyLyB7IGdzdWIoL1wiLywgIiIpOyBwcmludCAkTkY7fScpCgojIExvZyBGaWxlCkVucm9sbG1lbnRMb2dGaWxlPSIkU2NyaXB0TmFtZS0kKGRhdGUgKyIlWS0lbS0lZCIpLmxvZyIKCiMgQW5zd2VyIEZpbGUKQW5zd2VyRmlsZT0iL0xpYnJhcnkvTWFuYWdlZCBQcmVmZXJlbmNlcy9jb20uaW5zaWdodC5hbnN3ZXIucGxpc3QiCgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgSkFNRiBCVUlMVC1JTiBWQVJJQUJMRVMgVkFMSURBVElPTgojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgRnVsbHNjcmVlbiBNb2RlCmlmIFtbICIkNCIgIT0gIiIgXV07IHRoZW4KCUZ1bGxzY3JlZW49IiQ0IgplbHNlCglGdWxsc2NyZWVuPXRydWUKZmkKCiMgTm8gU2xlZXAgLyBDYWZmZWluYXRlIE1vZGUKaWYgW1sgIiQ1IiAhPSAiIiBdXTsgdGhlbgoJRW5hYmxlTm9TbGVlcD0iJDUiCmVsc2UKCUVuYWJsZU5vU2xlZXA9dHJ1ZQpmaQoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIEFOU1dFUiBGSUxFIEZVTkNUSU9OUywgQ09OVFJPTCAmIFZBUklBQkxFUwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCkNoZWNrQW5zd2VyRmlsZSgpIHsKCSMgQ2hlY2tzIGZvciB0aGUgYW5zd2VyIGZpbGUuIElmIGl0IGRvZXNuJ3QgZXhpc3QgYWZ0ZXIgMzAgc2Vjb25kcywgZXhpdHMgd2l0aCBlcnJvciAxLgoJCglDb3VudGVyPTAKCUZhaWxDb3VudD0zMAoJL2Jpbi9lY2hvICJDaGVja2luZyBmb3IgYW5zd2VyIGZpbGUgYXQgJHtBbnN3ZXJGaWxlfSIKCXdoaWxlIFtbICEgLWUgIiR7QW5zd2VyRmlsZX0iICBdXTsgZG8KCQkvYmluL3NsZWVwIDEKCQlDb3VudGVyPSQoKENvdW50ZXIgKyAxKSkKCQlpZiBbWyAiJENvdW50ZXIiID0gIiRGYWlsQ291bnQiIF1dOyB0aGVuCgkJCS9iaW4vZWNobyAiV2FpdGVkICRGYWlsQ291bnQgc2Vjb25kcyBmb3IgJEFuc3dlckZpbGUsIGFib3J0aW5nIHdpdGggZXhpdCAxIiAiRVJST1IiCgkJCWV4aXQgMQoJCWZpCglkb25lCgkvYmluL2VjaG8gIkFuc3dlciBmaWxlIGZvdW5kLCBwcm9jZWVkaW5nIgp9CgpHZXRBbnN3ZXIoKSB7CgkjIFJldHVybnMgYSBzaW5nbGUgdmFsdWUgZnJvbSB0aGUgYW5zd2VyIGZpbGUuCgkjCgkjIE5PVEVTCgkjIC0gT3RoZXIgdmFyaWFibGVzIGluIHRoaXMgc2NyaXB0IGNhbiBiZSBjYWxsZWQgZnJvbSB0aGUgdmFsdWUgaW4gdGhlIGFuc3dlciBmaWxlCgkjIC0gU3BlY2lhbCBjaGFyYWN0ZXIgc3VjaCBhcyA7IG5lZWQgdG8gYmUgZXNjYXBlZCB3aXRoIGEgcHJlY2VlZGluZyBcIChleDogXDspCgkjCgkjIFBBUkFNRVRFUlMKCSMgJDEgPSBTZWN0aW9uIGFuZCBvcHRpb25hbCBzdWJzZWN0aW9uKHMpCgkjIC0gRXhhbXBsZTogT3JnSW5mbwoJIyAkMiA9IFZhbHVlIHRvIHBhcnNlCgkjIC0gRXhhbXBsZTogT3JnTmFtZQoJIwoJIyBVU0FHRQoJIyBFeGFtcGxlOiBPcmdOYW1lPSQoR2V0QW5zd2VyICJPcmdJbmZvIiAiT3JnTmFtZSIpCgkKCWV2YWwgZWNobyAkKC91c3IvbGliZXhlYy9QbGlzdEJ1ZGR5IC1jICJwcmludCA6JDE6JDIiICIkQW5zd2VyRmlsZSIpCn0KCkdldExpc3QoKSB7CgkjIFJldHVybiBhIGxpc3Qgb2YgdmFsdWVzIGZyb20gYW4gYXJyYXkgaW4gdGhlIGFuc3dlciBmaWxlLgoJIwoJIyBOT1RFUwoJIyAtIFZhbHVlcyBpbiB0aGUgYXJyYXkgY2Fubm90IGNvbnRhaW4gdmFyaWFibGVzCgkjIC0gVGhlIHZhcmlhYmxlIGNhbGxlZCBtdXN0IGJlIGFuIGFycmF5IChzZWUgZXhhbXBsZSBiZWxvdykKCSMKCSMgUEFSQU1FVEVSUwoJIyAkMSA9IFNlY3Rpb24gYW5kIG9wdGlvbmFsIHN1YnNlY3Rpb24ocykKCSMgLSBFeGFtcGxlOiBFbnJvbGxtZW50U2NyaXB0OlBvbGljaWVzCgkjICQyID0gTGlzdCB0byBwYXJzZQoJIyAtIEV4YW1wbGU6IFBvbGljaWVzTGlzdAoJIwoJIyBVU0FHRQoJIyBFeGFtcGxlOiBQb2xpY2llc0xpc3Q9KCQoR2V0TGlzdCAiRW5yb2xsbWVudFNjcmlwdDpQb2xpY2llcyIgIlBvbGljaWVzTGlzdCIpKQoJCglkZWNsYXJlIC1hIExpc3Q9KCQoL3Vzci9saWJleGVjL1BsaXN0QnVkZHkgLWMgInByaW50IDokMTokMiIgIiRBbnN3ZXJGaWxlIiB8IHNlZCAtZSAxZCAtZSAnJGQnKSkKCWZvciBpIGluICIke0xpc3RbQF19IjsgZG8KCQllY2hvICIke2lbMF19IiB8IGF3ayAne3ByaW50IHN1YnN0cigkMCw1KX0nCglkb25lCn0KCiMgQ2hlY2tzIGZvciB0aGUgYW5zd2VyIGZpbGUuCkNoZWNrQW5zd2VyRmlsZQoKIyBTZXRzIHRoZSBpbnRlcm5hbCBmaWVsZCBzZXBhcmF0b3IgdG8gbmV3bGluZSBzbyBhbnN3ZXIgZmlsZSB2YXJpYWJsZXMgYXJlIHByb3Blcmx5IHBhcnNlZC4KSUZTPSQnXG4nCgojIE9yZ2FuaXphdGlvbiBJbmZvCk9yZ05hbWU9JChHZXRBbnN3ZXIgIk9yZ0luZm8iICJPcmdOYW1lIikKSmFtZlVSTD0kKEdldEFuc3dlciAiT3JnSW5mbyIgIkphbWZVUkwiKQoKIyBMb2dnaW5nCkVucm9sbG1lbnRMb2dQYXRoPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkxvZ2dpbmciICJFbnJvbGxtZW50TG9nUGF0aCIpCgojIEphbWYgQmluYXJ5CkphbWZCaW5hcnk9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6SmFtZkJpbmFyeSIgIkphbWZCaW5hcnkiKQpKYW1mQmluYXJ5UGF0aD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpKYW1mQmluYXJ5IiAiSmFtZkJpbmFyeVBhdGgiKQoKIyBERVBOb3RpZnkgLSBJbnN0YWxsIEluZm8KREVQTm90aWZ5SW5zdGFsbFBvbGljeT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6SW5zdGFsbEluZm8iICJERVBOb3RpZnlJbnN0YWxsUG9saWN5IikKREVQTm90aWZ5UGF0aD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6SW5zdGFsbEluZm8iICJERVBOb3RpZnlQYXRoIikKREVQTm90aWZ5QXBwPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpJbnN0YWxsSW5mbyIgIkRFUE5vdGlmeUFwcCIpCgojIERFUE5vdGlmeSAtIFByZVN0YWdlIEZpbGVzCkRFUE5vdGlmeVNjcmlwdHNQYXRoPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpQcmVTdGFnZUluZm8iICJERVBOb3RpZnlTY3JpcHRzUGF0aCIpCkRFUE5vdGlmeUVucm9sbG1lbnRTdGFydFNjcmlwdD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6UHJlU3RhZ2VJbmZvIiAiREVQTm90aWZ5RW5yb2xsbWVudFN0YXJ0U2NyaXB0IikKREVQTm90aWZ5RW5yb2xsbWVudEluc3RhbGxlckVycm9yPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpQcmVTdGFnZUluZm8iICJERVBOb3RpZnlFbnJvbGxtZW50SW5zdGFsbGVyRXJyb3IiKQpERVBOb3RpZnlFbnJvbGxtZW50SW5zdGFsbGVyT3V0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpQcmVTdGFnZUluZm8iICJERVBOb3RpZnlFbnJvbGxtZW50SW5zdGFsbGVyT3V0IikKREVQTm90aWZ5TGF1bmNoRGFlbW9uUGF0aD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6UHJlU3RhZ2VJbmZvIiAiREVQTm90aWZ5TGF1bmNoRGFlbW9uUGF0aCIpCkRFUE5vdGlmeUxhdW5jaERhZW1vbkZpbGU9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6REVQTm90aWZ5OlByZVN0YWdlSW5mbyIgIkRFUE5vdGlmeUxhdW5jaERhZW1vbkZpbGUiKQoKIyBERVBOb3RpZnkgLSBUZW1wIEZpbGVzCkRFUE5vdGlmeVRtcFBhdGg9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6REVQTm90aWZ5OlRlbXBGaWxlcyIgIkRFUE5vdGlmeVRtcFBhdGgiKQpERVBOb3RpZnlMb2dGaWxlPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpUZW1wRmlsZXMiICJERVBOb3RpZnlMb2dGaWxlIikKREVQTm90aWZ5RGVidWdMb2dGaWxlPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpUZW1wRmlsZXMiICJERVBOb3RpZnlEZWJ1Z0xvZ0ZpbGUiKQpERVBOb3RpZnlOZXdQbGlzdD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6VGVtcEZpbGVzIiAiREVQTm90aWZ5TmV3UGxpc3QiKQpERVBOb3RpZnlEb25lQk9NPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpUZW1wRmlsZXMiICJERVBOb3RpZnlEb25lQk9NIikKREVQTm90aWZ5TG9nb3V0Qk9NPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpUZW1wRmlsZXMiICJERVBOb3RpZnlMb2dvdXRCT00iKQpERVBOb3RpZnlSZXN0YXJ0Qk9NPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkRFUE5vdGlmeTpUZW1wRmlsZXMiICJERVBOb3RpZnlSZXN0YXJ0Qk9NIikKREVQTm90aWZ5QWdyZWVCT009JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6REVQTm90aWZ5OlRlbXBGaWxlcyIgIkRFUE5vdGlmeUFncmVlQk9NIikKREVQTm90aWZ5UmVnaXN0cmF0aW9uRG9uZUJPTT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpERVBOb3RpZnk6VGVtcEZpbGVzIiAiREVQTm90aWZ5UmVnaXN0cmF0aW9uRG9uZUJPTSIpCgojIEVycm9yIFNjcmVlbiBCcmFuZGluZwpFcnJvckJhbm5lclRpdGxlPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkVycm9yQ29udHJvbCIgIkVycm9yQmFubmVyVGl0bGUiKQpFcnJvck1haW5UZXh0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkVycm9yQ29udHJvbCIgIkVycm9yTWFpblRleHQiKQpFcnJvclN0YXR1cz0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpFcnJvckNvbnRyb2wiICJFcnJvclN0YXR1cyIpCgojIENvbXB1dGVyIE5hbWluZwpFbmFibGVTZXRDb21wdXRlck5hbWU9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6Q29tcHV0ZXJOYW1pbmciICJFbmFibGVTZXRDb21wdXRlck5hbWUiKQpDb21wdXRlck5hbWVQcmVmaXg9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6Q29tcHV0ZXJOYW1pbmciICJDb21wdXRlck5hbWVQcmVmaXgiKQpFbmFibGVDdXN0b21Db21wdXRlck5hbWU9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6Q29tcHV0ZXJOYW1pbmciICJFbmFibGVDdXN0b21Db21wdXRlck5hbWUiKQpDdXN0b21Db21wdXRlck5hbWVzTGlzdD0oJChHZXRMaXN0ICJFbnJvbGxtZW50U2NyaXB0OkNvbXB1dGVyTmFtaW5nIiAiQ3VzdG9tQ29tcHV0ZXJOYW1lc0xpc3QiKSkKQ3VzdG9tQ29tcHV0ZXJTZXJpYWxzTGlzdD0oJChHZXRMaXN0ICJFbnJvbGxtZW50U2NyaXB0OkNvbXB1dGVyTmFtaW5nIiAiQ3VzdG9tQ29tcHV0ZXJTZXJpYWxzTGlzdCIpKQoKIyBBcHBlYXJhbmNlIEFuZCBCcmFuZGluZwpQb2xpY3lEZWZhdWx0SWNvbj0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpBcHBlYXJhbmNlQW5kQnJhbmRpbmciICJQb2xpY3lEZWZhdWx0SWNvbiIpCkVuYWJsZUN1c3RvbUljb249JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6QXBwZWFyYW5jZUFuZEJyYW5kaW5nIiAiRW5hYmxlQ3VzdG9tSWNvbiIpCkN1c3RvbUljb25Mb2NhdGlvbj0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpBcHBlYXJhbmNlQW5kQnJhbmRpbmciICJDdXN0b21JY29uTG9jYXRpb24iKQpDdXN0b21JY29uRG93bmxvYWRQYXRoPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkFwcGVhcmFuY2VBbmRCcmFuZGluZyIgIkN1c3RvbUljb25Eb3dubG9hZFBhdGgiKQpDdXN0b21JY29uRG93bmxvYWRGaWxlPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkFwcGVhcmFuY2VBbmRCcmFuZGluZyIgIkN1c3RvbUljb25Eb3dubG9hZEZpbGUiKQpCYW5uZXJUaXRsZT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpBcHBlYXJhbmNlQW5kQnJhbmRpbmciICJCYW5uZXJUaXRsZSIpCk1haW5UZXh0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkFwcGVhcmFuY2VBbmRCcmFuZGluZyIgIk1haW5UZXh0IikKSW5pdGlhbFN0YXJ0U3RhdHVzPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkFwcGVhcmFuY2VBbmRCcmFuZGluZyIgIkluaXRpYWxTdGFydFN0YXR1cyIpCkluc3RhbGxDb21wbGV0ZVRleHQ9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6QXBwZWFyYW5jZUFuZEJyYW5kaW5nIiAiSW5zdGFsbENvbXBsZXRlVGV4dCIpClN0YXR1c1RleHRBbGlnbm1lbnQ9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6QXBwZWFyYW5jZUFuZEJyYW5kaW5nIiAiU3RhdHVzVGV4dEFsaWdubWVudCIpCgojIEhlbHAgQnViYmxlCkVuYWJsZUhlbHBCdWJibGU9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6SGVscEJ1YmJsZSIgIkVuYWJsZUhlbHBCdXR0b24iKQpIZWxwQ29udGFjdE5hbWU9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6SGVscEJ1YmJsZSIgIkhlbHBDb250YWN0TmFtZSIpCkhlbHBDb250YWN0SW5mbz0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpIZWxwQnViYmxlIiAiSGVscENvbnRhY3RJbmZvIikKSGVscEJ1YmJsZVRpdGxlPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkhlbHBCdWJibGUiICJIZWxwQnViYmxlVGl0bGUiKQpIZWxwQnViYmxlQm9keT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpIZWxwQnViYmxlIiAiSGVscEJ1YmJsZUJvZHkiKQoKIyBQb2xpY2llcwpQb2xpY2llc0xpc3Q9KCQoR2V0TGlzdCAiRW5yb2xsbWVudFNjcmlwdDpQb2xpY2llcyIgIlBvbGljaWVzTGlzdCIpKQoKIyBKYW1mIENvbm5lY3QKUmVzZXRKYW1mQ29ubmVjdExvZ2luPSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OkphbWZDb25uZWN0IiAiUmVzZXRKYW1mQ29ubmVjdExvZ2luIikKCiMgU3R1YiBGaWxlcwpFbmFibGVDcmVhdGVTdHViRmlsZXM9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6U3R1YkZpbGVzIiAiRW5hYmxlQ3JlYXRlU3R1YkZpbGVzIikKU3R1YkZpbGVzTGlzdD0oJChHZXRMaXN0ICJFbnJvbGxtZW50U2NyaXB0OlN0dWJGaWxlcyIgIlN0dWJGaWxlc0xpc3QiKSkKCiMgSmFtZiBSZWNvbgpVcGRhdGVVc2VybmFtZUludmVudG9yeVJlY29yZD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpKYW1mUmVjb24iICJVcGRhdGVVc2VybmFtZUludmVudG9yeVJlY29yZCIpCgojIFNjcmlwdCBDb21wbGV0aW9uClJlc3RhcnRXaGVuRG9uZT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uIiAiUmVzdGFydFdoZW5Eb25lIikKCiMgU2NyaXB0IENvbXBsZXRpb24gLSBSZXN0YXJ0CkNvbXBsZXRpb25SZXN0YXJ0QnV0dG9uVGV4dD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uOlJlc3RhcnQiICJDb21wbGV0aW9uUmVzdGFydEJ1dHRvblRleHQiKQpDb21wbGV0aW9uUmVzdGFydE1haW5UZXh0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OlNjcmlwdENvbXBsZXRpb246UmVzdGFydCIgIkNvbXBsZXRpb25SZXN0YXJ0TWFpblRleHQiKQpFbmFibGVNRE1SZXN0YXJ0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OlNjcmlwdENvbXBsZXRpb246UmVzdGFydCIgIkVuYWJsZU1ETVJlc3RhcnQiKQpNRE1SZXN0YXJ0Q29tbWFuZFBvbGljeT0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uOlJlc3RhcnQiICJNRE1SZXN0YXJ0Q29tbWFuZFBvbGljeSIpCkVuYWJsZVJlc3RhcnRUaW1lcj0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uOlJlc3RhcnQiICJFbmFibGVSZXN0YXJ0VGltZXIiKQpSZXN0YXJ0VGltZXI9JChHZXRBbnN3ZXIgIkVucm9sbG1lbnRTY3JpcHQ6U2NyaXB0Q29tcGxldGlvbjpSZXN0YXJ0IiAiUmVzdGFydFRpbWVyIikKUmVzdGFydFRpbWVyVGV4dD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uOlJlc3RhcnQiICJSZXN0YXJ0VGltZXJUZXh0IikKCiMgU2NyaXB0IENvbXBsZXRpb24gLSBRdWl0CkNvbXBsZXRpb25RdWl0QnV0dG9uVGV4dD0kKEdldEFuc3dlciAiRW5yb2xsbWVudFNjcmlwdDpTY3JpcHRDb21wbGV0aW9uOlF1aXQiICJDb21wbGV0aW9uUXVpdEJ1dHRvblRleHQiKQpDb21wbGV0aW9uUXVpdE1haW5UZXh0PSQoR2V0QW5zd2VyICJFbnJvbGxtZW50U2NyaXB0OlNjcmlwdENvbXBsZXRpb246UXVpdCIgIkNvbXBsZXRpb25RdWl0TWFpblRleHQiKQoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwojIEZVTkNUSU9OUwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCkdldFRpbWVzdGFtcCgpIHsKCSMgVGltZXN0YW1wIGZ1bmN0aW9uLiBVc2VkIHRvIGVjaG8gdGhlIGRhdGUvdGltZSB0byB0aGUgREVQTm90aWZ5IGRlYnVnIGxvZyBmaWxlLgoJCglpZiBbWyAkMSA9PSAiU1RBUlQiIF1dOyB0aGVuCgkJVGltZXN0YW1wSW5mbz0iU1RBUlQiCgllbGlmIFtbICQxID09ICJJTkZPIiBdXTsgdGhlbgoJCVRpbWVzdGFtcEluZm89IklORk8iCgllbGlmIFtbICQxID09ICJXQVJOIiBdXTsgdGhlbgoJCVRpbWVzdGFtcEluZm89IldBUk4iCgllbGlmIFtbICQxID09ICJFUlJPUiIgXV07IHRoZW4KCQlUaW1lc3RhbXBJbmZvPSJFUlJPUiIKCWVsaWYgW1sgJDEgPT0gIkRFQlVHIiBdXTsgdGhlbgoJCVRpbWVzdGFtcEluZm89IkRFQlVHIgoJZWxpZiBbWyAkMSA9PSAiRklOSVNIIiBdXTsgdGhlbgoJCVRpbWVzdGFtcEluZm89IkZJTklTSCIKCWVsaWYgW1sgJDEgPT0gIlRFU1QiIF1dOyB0aGVuCgkJVGltZXN0YW1wSW5mbz0iVEVTVCIKCWVsc2UKCQlUaW1lc3RhbXBJbmZvPSJJTkZPIgoJZmkKCWVjaG8gJChkYXRlICsiW1slYiAlZCwgJVkgJVogJVQgJFRpbWVzdGFtcEluZm9dXTogIikKfQoKTG9nZ2luZygpIHsKCSMgTG9nZ2luZyBmdW5jdGlvbi4gVXNlZCB0byB3cml0ZSBhY3Rpb25zIHRvIHRoZSBlbnJvbGxtZW50IGxvZyBmaWxlLgoJIwoJIyBQQVJBTUVURVJTCgkjICQxID0gVGV4dCB0byB3cml0ZSB0byB0aGUgbG9nCgkjIC0gRXhhbXBsZTogVGhpcyBpcyBhIHRlc3QKCSMgJDIgPSAob3B0aW9uYWwpIEluZm8gbGV2ZWwgZm9yIHRoZSBsb2cgZW50cnk7IGRlZmF1bHQgaXMgSU5GTwoJIyAtIEV4YW1wbGU6IFdBUk4KCSMKCSMgVVNBR0UKCSMgRXhhbXBsZTogTG9nZ2luZyAiVGhpcyBpcyBhIHRlc3QiICJXQVJOIgoJCgkKCWlmIFtbICQyID09ICJTVEFSVCIgXV07IHRoZW4KCQlMb2dJbmZvPSJTVEFSVCIKCWVsaWYgW1sgJDIgPT0gIklORk8iIF1dOyB0aGVuCgkJTG9nSW5mbz0iSU5GTyIKCWVsaWYgW1sgJDIgPT0gIldBUk4iIF1dOyB0aGVuCgkJTG9nSW5mbz0iV0FSTiIKCWVsaWYgW1sgJDIgPT0gIkVSUk9SIiBdXTsgdGhlbgoJCUxvZ0luZm89IkVSUk9SIgoJZWxpZiBbWyAkMiA9PSAiREVCVUciIF1dOyB0aGVuCgkJTG9nSW5mbz0iREVCVUciCgllbGlmIFtbICQyID09ICJGSU5JU0giIF1dOyB0aGVuCgkJTG9nSW5mbz0iRklOSVNIIgoJZWxpZiBbWyAkMSA9PSAiVEVTVCIgXV07IHRoZW4KCQlMb2dJbmZvPSJURVNUIgoJZWxzZQoJCUxvZ0luZm89IklORk8iCglmaQoJcHJpbnRmICIkKGRhdGUgKyJbWyViICVkLCAlWSAlWiAlVCAkTG9nSW5mb11dOiAiKSQxXG4iID4+ICIkRW5yb2xsbWVudExvZ1BhdGgvJEVucm9sbG1lbnRMb2dGaWxlIgp9CgpHZXRDdXJyZW50VXNlcigpIHsKCSMgUmV0dXJuIHRoZSBjdXJyZW50IHVzZXIncyB1c2VybmFtZS4KCQoJL2Jpbi9lY2hvICJzaG93IFN0YXRlOi9Vc2Vycy9Db25zb2xlVXNlciIgfCAvdXNyL3NiaW4vc2N1dGlsIHwgL3Vzci9iaW4vYXdrICcvTmFtZSA6LyAmJiAhIC9sb2dpbndpbmRvdy8ge3ByaW50ICQzfScKfQoKR2V0Q3VycmVudFVzZXJVSUQoKSB7CgkjIFJldHVybiB0aGUgY3VycmVudCB1c2VyJ3MgVUlELgoJCgkvYmluL2VjaG8gJCgvdXNyL2Jpbi9kc2NsIC4gLWxpc3QgL1VzZXJzIFVuaXF1ZUlEIHwgL3Vzci9iaW4vZ3JlcCAiJChHZXRDdXJyZW50VXNlcikiIHwgL3Vzci9iaW4vYXdrICd7cHJpbnQgJDJ9JyB8IC91c3IvYmluL3NlZCAtZSAncy9eWyBcdF0qLy8nKQp9CgpHZXRSZWFsTmFtZSgpIHsKCSMgUmV0dXJucyB0aGUgY3VycmVudCB1c2VyJ3MgcmVhbCBuYW1lLgoJCgkvYmluL2VjaG8gJChpZCAtUCAkKEdldEN1cnJlbnRVc2VyKSB8IGN1dCAtZCA6IC1mIDgpCn0KCkxvZ2dpbmdIZWFkZXIoKSB7CgkjIENyZWF0ZXMgdGhlIGVucm9sbG1lbnQgbG9nIGhlYWRlci4KCQoJTG9nZ2luZyAiIiAiU1RBUlQiCglMb2dnaW5nICItLS0gU1RBUlQgREVWSUNFIEVOUk9MTE1FTlQgTE9HIC0tLSIgIlNUQVJUIgoJTG9nZ2luZyAiIiAiU1RBUlQiCglMb2dnaW5nICIkU2NyaXB0TmFtZSBWZXJzaW9uICRWZXJzaW9uIiAiU1RBUlQiCglMb2dnaW5nICJBbnN3ZXIgRmlsZTogJEFuc3dlckZpbGUiCglMb2dnaW5nICIiICJTVEFSVCIKfQoKTG9nZ2luZ0Zvb3RlcigpIHsKCSMgQ3JlYXRlcyB0aGUgZW5yb2xsbWVudCBsb2cgZm9vdGVyLgoJCglMb2dnaW5nICIiICJGSU5JU0giCglMb2dnaW5nICItLS0gRklOSVNIIERFVklDRSBFTlJPTExNRU5UIExPRyAtLS0iICJGSU5JU0giCglMb2dnaW5nICIiICJGSU5JU0giCn0KCkdldFRpbWVyTm91bigpIHsKCSMgUHJldHRpZmllZCByZXR1cm4gZm9yIHByaW50aW5nIG91dCAiMSBzZWNvbmQiIG9yICI+MSBzZWNvbmRzIi4KCQoJaWYgW1sgJDEgPT0gMSBdXTsgdGhlbgoJCWVjaG8gIiQxIHNlY29uZCIKCWVsc2UKCQllY2hvICIkMSBzZWNvbmRzIgoJZmkKfQoKVmFsaWRhdGVUcnVlRmFsc2VGbGFncygpIHsKCSMgVmFsaWRhdGVzIHRydWUvZmFsc2UgZmxhZ3MgdGhhdCBhcmUgc2V0IGluIHRoaXMgc2NyaXB0J3MgcGFyYW1ldGVycyBpbiB0aGUgSmFtZiBwb2xpY3kuCgkKCWlmIFtbICIkRnVsbHNjcmVlbiIgIT0gdHJ1ZSBdXSAmJiBbWyAiJEZ1bGxzY3JlZW4iICE9IGZhbHNlIF1dOyB0aGVuCgkJL2Jpbi9lY2hvICIkKEdldFRpbWVzdGFtcCAiREVCVUciKSBGdWxsc2NyZWVuIGNvbmZpZ3VyYXRpb24gbm90IHNldCBwcm9wZXJseS4gQ3VycmVudGx5IHNldCB0byAkRnVsbHNjcmVlbi4gUGxlYXNlIHVwZGF0ZSB0byB0cnVlIG9yIGZhbHNlLiIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlEZWJ1Z0xvZ0ZpbGUiCgkJTG9nZ2luZyAiRnVsbHNjcmVlbiBjb25maWd1cmF0aW9uIG5vdCBzZXQgcHJvcGVybHkuIEN1cnJlbnRseSBzZXQgdG8gJEZ1bGxzY3JlZW4uIFBsZWFzZSB1cGRhdGUgdG8gdHJ1ZSBvciBmYWxzZS4iICJERUJVRyIKCQlleGl0IDEKCWZpCgkKCWlmIFtbICIkRW5hYmxlTm9TbGVlcCIgIT0gdHJ1ZSBdXSAmJiBbWyAiJEVuYWJsZU5vU2xlZXAiICE9IGZhbHNlIF1dOyB0aGVuCgkJL2Jpbi9lY2hvICIkKEdldFRpbWVzdGFtcCAiREVCVUciKSBFbmFibGUgTm8gU2xlZXAgY29uZmlndXJhdGlvbiBub3Qgc2V0IHByb3Blcmx5LiBDdXJyZW50bHkgc2V0IHRvICRFbmFibGVOb1NsZWVwLiBQbGVhc2UgdXBkYXRlIHRvIHRydWUgb3IgZmFsc2UuIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeURlYnVnTG9nRmlsZSIKCQlMb2dnaW5nICJFbmFibGUgTm8gU2xlZXAgY29uZmlndXJhdGlvbiBub3Qgc2V0IHByb3Blcmx5LiBDdXJyZW50bHkgc2V0IHRvICRFbmFibGVOb1NsZWVwLiBQbGVhc2UgdXBkYXRlIHRvIHRydWUgb3IgZmFsc2UuIiAiREVCVUciCgkJZXhpdCAxCglmaQp9CgpHZXRTZXR1cEFzc2lzdGFudFByb2Nlc3MoKSB7CgkjIFdhaXRzIGZvciBTZXR1cCBBc3Npc2FudCB0byBmaW5pc2ggYmVmb3JlIGNvbnRpbnVpbmcuCgkKCVByb2Nlc3NOYW1lPSJTZXR1cCBBc3Npc3RhbnQiCglTZXR1cEFzc2lzdGFudFByb2Nlc3M9IiIKCVNsZWVwVGltZXI9NQoJTG9nZ2luZyAiQ2hlY2tpbmcgdG8gc2VlIGlmICRQcm9jZXNzTmFtZSBpcyBydW5uaW5nIgoJCgl3aGlsZSBbWyAkU2V0dXBBc3Npc3RhbnRQcm9jZXNzICE9ICIiIF1dOyBkbwoJCUxvZ2dpbmcgIiRQcm9jZXNzTmFtZSBzdGlsbCBydW5uaW5nICBQSUQ6ICRTZXR1cEFzc2lzdGFudFByb2Nlc3MiCgkJTG9nZ2luZyAiU2xlZXBpbmcgJChHZXRUaW1lck5vdW4gJFNsZWVwVGltZXIpIgoJCS9iaW4vc2xlZXAgJFNsZWVwVGltZXIKCQlTZXR1cEFzc2lzdGFudFByb2Nlc3M9JCgvdXNyL2Jpbi9wZ3JlcCAtbCAiJFByb2Nlc3NOYW1lIikKCWRvbmUKCUxvZ2dpbmcgIiRQcm9jZXNzTmFtZSBmaW5pc2hlZCIKfQoKV2FpdEZvckN1cnJlbnRVc2VyKCkgewoJIyBDaGVja3MgdGhlIGN1cnJlbnQgdXNlcidzIFVJRCBhbmQgdXNlcm5hbWU7IGlmIFVJRCBpcyBsZXNzIHRoYW4gNTAxIG9yIHRoZSB1c2VybmFtZSBpcyBibGFuaywgbG9vcHMgYW5kIHdhaXRzIHVudGlsIHRoZSB1c2VyIGlzIGxvZ2dlZCBpbi4gT25jZSB0aGUgVUlEIGlzIGVxdWFsIHRvIG9yIGdyZWF0ZXIgdGhhbiA1MDEgb3IgdGhlIHVzZXJuYW1lIGlzIHByZXNlbnQsIHRoaXMgc2NyaXB0IHByb2NlZWRzLiBUaGlzIGlzIHRvIHByZXZlbnQgYSBzY2VuYXJpbyB3aGVyZSBhIHN5c3RlbSBhY2NvdW50IHN1Y2ggYXMgU2V0dXBBc3Npc3RhbnQgaXMgc3RpbGwgZG9pbmcgc3R1ZmYgYW5kIERFUE5vdGlmeSB0cmllcyB0byBzdGFydC4KCQoJQ3VycmVudFVzZXJVSUQ9JChHZXRDdXJyZW50VXNlclVJRCkKCXdoaWxlIFtbICRDdXJyZW50VXNlclVJRCAtbHQgNTAxIHx8ICQoR2V0Q3VycmVudFVzZXIpID09ICIiIF1dOyBkbwoJCUxvZ2dpbmcgIlVzZXIgaXMgbm90IGxvZ2dlZCBpbiwgd2FpdGluZyIKCQkvYmluL3NsZWVwIDUKCQlDdXJyZW50VXNlclVJRD0kKEdldEN1cnJlbnRVc2VyVUlEKQoJZG9uZQoJTG9nZ2luZyAiQ3VycmVudCB1c2VyOiAkKEdldEN1cnJlbnRVc2VyKSB3aXRoIFVJRCAkKEdldEN1cnJlbnRVc2VyVUlEKSIKfQoKR2V0RmluZGVyUHJvY2VzcygpIHsKCSMgQ2hlY2tzIHRvIHNlZSBpZiB0aGUgRmluZGVyIGlzIHJ1bm5pbmcgeWV0LiBJZiBpdCBpcywgY29udGludWUuIE5pY2UgZm9yIGluc3RhbmNlcyB3aGVyZSB0aGUgdXNlciBpcyBub3Qgc2V0dGluZyB1cCBhIHVzZXJuYW1lIGR1cmluZyB0aGUgU2V0dXAgQXNzaXN0YW50IHByb2Nlc3MuCgkKCUxvZ2dpbmcgIkNoZWNraW5nIHRvIHNlZSBpZiB0aGUgRmluZGVyIHByb2Nlc3MgaXMgcnVubmluZyIKCUZpbmRlclByb2Nlc3M9JCgvdXNyL2Jpbi9wZ3JlcCAtbCAiRmluZGVyIiAyPi9kZXYvbnVsbCkKCVJlc3BvbnNlPSQ/CglMb2dnaW5nICJGaW5kZXIgUElEOiAkRmluZGVyUHJvY2VzcyIKCXdoaWxlIFtbICRSZXNwb25zZSAtbmUgMCBdXTsgZG8KCQlMb2dnaW5nICJGaW5kZXIgUElEIG5vdCBmb3VuZC4gQXNzdW1pbmcgZGV2aWNlIGlzIHNpdHRpbmcgYXQgdGhlIGxvZ2luIHdpbmRvdyIKCQkvYmluL3NsZWVwIDEKCQlGaW5kZXJQcm9jZXNzPSQoL3Vzci9iaW4vcGdyZXAgLWwgIkZpbmRlciIgMj4vZGV2L251bGwpCgkJUmVzcG9uc2U9JD8KCQlpZiBbWyAkRmluZGVyUHJvY2VzcyAhPSAiIiBdXTsgdGhlbgoJCQlMb2dnaW5nICJGaW5kZXIgUElEOiAkRmluZGVyUHJvY2VzcyIKCQlmaQoJZG9uZQp9CgpDaGVja0ZvckFwcGxlU2lsaWNvbigpIHsKCSMgQ2hlY2tzIHRoZSBDUFUgYXJjaGl0ZWN0dXJlIGFuZCBpbnN0YWxscyBSb3NldHRhMiBpZiB0aGUgTWFjIGlzIG9uIEFwcGxlIFNpbGljb24uCgkKCUxvZ2dpbmcgIkNoZWNraW5nIGZvciBBcHBsZSBTaWxpY29uIgoJaWYgW1sgIiRTeXN0ZW1BcmNoIiA9PSAiYXJtNjQiIF1dOyB0aGVuCgkJTG9nZ2luZyAiUnVubmluZyBvbiBBcHBsZSBTaWxpY29uIgoJCUxvZ2dpbmcgIkluc3RhbGxpbmcgUm9zZXR0YSAyIGZvciBjb21wYXRpYmlsaXR5IHdpdGggSW50ZWwtYmFzZWQgYXBwcyIKCQkvdXNyL3NiaW4vc29mdHdhcmV1cGRhdGUgLS1pbnN0YWxsLXJvc2V0dGEgLS1hZ3JlZS10by1saWNlbnNlCgllbHNlCgkJTG9nZ2luZyAiTm90IG9uIEFwcGxlIFNpbGljb24sIHNraXBwaW5nIFJvc2V0dGEgMiIKCWZpCn0KCkNoZWNrRm9yREVQTm90aWZ5KCkgewoJIyBDaGVja3MgdG8gZW5zdXJlIHRoYXQgREVQTm90aWZ5IGlzIGluc3RhbGxlZCBiZWZvcmUgbW92aW5nIG9uIHRvIHRoZSBuZXh0IHN0ZXAKCSMgSWYgaXQgaXMgbm90IGluc3RhbGxlZCwgYXR0ZW1wdHMgdG8gcmVpbnN0YWxsIGl0IGJ5IGRvd25sb2FkaW5nIGFuZCBpbnN0YWxsaW5nIGl0IHZpYSBKYW1mIHBvbGljeS4KCSMgSWYgREVQTm90aWZ5IGNhbm5vdCBiZSBpbnN0YWxsZWQgdmlhIHBvbGljeSwgdGhpcyBzY3JpcHQgd2lsbCBleGl0IGFmdGVyIDMwIHNlY29uZHMgb2Ygd2FpdGluZy4KCQoJQ291bnRlcj0wCglGYWlsQ291bnQ9MzAKCVdhaXRUaW1lcj01CglMb2dnaW5nICJNYWtpbmcgc3VyZSBERVBOb3RpZnkgaXMgaW5zdGFsbGVkIgoJd2hpbGUgW1sgISAtZSAiJHtERVBOb3RpZnlQYXRofS8ke0RFUE5vdGlmeUFwcH0iIF1dOyBkbwoJCUxvZ2dpbmcgIkRFUE5vdGlmeSBoYXMgbm90IGJlZW4gaW5zdGFsbGVkIHlldCIKCQlpZiBbWyAhIC1lICIke0RFUE5vdGlmeVBhdGh9LyR7REVQTm90aWZ5QXBwfSIgXV0gJiYgW1sgIiRDb3VudGVyIiAtZXEgJFdhaXRUaW1lciBdXTsgdGhlbgoJCQkjIElmIERFUE5vdGlmeSBpcyBub3QgaW5zdGFsbGVkLCBhdHRlbXB0IHRvIGluc3RhbGwgaXQgdmlhIEphbWYgcG9saWN5CgkJCQoJCQlMb2dnaW5nICJXYWl0ZWQgJChHZXRUaW1lck5vdW4gJFdhaXRUaW1lcikgZm9yIERFUE5vdGlmeSIKCQkJTG9nZ2luZyAiRG93bmxvYWRpbmcgYW5kIGluc3RhbGxpbmcgREVQTm90aWZ5IHZpYSBKYW1mIHBvbGljeSAke0RFUE5vdGlmeUluc3RhbGxQb2xpY3l9IgoJCQkiJEphbWZCaW5hcnlQYXRoLyRKYW1mQmluYXJ5IiBwb2xpY3kgLWV2ZW50ICIke0RFUE5vdGlmeUluc3RhbGxQb2xpY3l9IgoJCWZpCgkJTG9nZ2luZyAiV2FpdGluZyAkKEdldFRpbWVyTm91biAxKSBiZWZvcmUgY2hlY2tpbmcgYWdhaW4iCgkJL2Jpbi9zbGVlcCAxCgkJQ291bnRlcj0kKChDb3VudGVyICsgMSkpCgkJaWYgW1sgIiRDb3VudGVyIiA9ICIkRmFpbENvdW50IiBdXTsgdGhlbgoJCQlMb2dnaW5nICJXZSB3YWl0ZWQgJChHZXRUaW1lck5vdW4gJEZhaWxDb3VudCksIGl0IGRpZCBub3QgaW5zdGFsbCwgYWJvcnRpbmcgd2l0aCBleGl0IDEiICJFUlJPUiIKCQkJZXhpdCAxCgkJZmkKCWRvbmUKCUxvZ2dpbmcgIkZvdW5kIERFUE5vdGlmeSBhdCAke0RFUE5vdGlmeVBhdGh9LyR7REVQTm90aWZ5QXBwfSIKfQoKQ2hlY2tGb3JERVBOb3RpZnlCT01zKCkgewoJIyBDaGVja3MgYW5kIFdhcm5pbmdzIGlmIEJPTSBmaWxlcyBleGlzdC4KCQoJTG9nZ2luZyAiU2NyaXB0IHRlc3RpbmcgY2hlY2siCglpZiBbWyAoLWYgIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIiB8fCAtZiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeURvbmVCT00iKSBdXTsgdGhlbgoJCS9iaW4vZWNobyAiJChHZXRUaW1lc3RhbXAgIkVSUk9SIikgQ29uZmlnIGZpbGVzIHdlcmUgZm91bmQgaW4gL3Zhci90bXAuIExldHRpbmcgdXNlciBrbm93IGFuZCBleGl0aW5nLiIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlEZWJ1Z0xvZ0ZpbGUiCgkJbXYgIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIiAiJERFUE5vdGlmeVRtcFBhdGgvZGVwbm90aWZ5X29sZC5sb2ciCgkJL2Jpbi9lY2hvICJDb21tYW5kOiBNYWluVGl0bGU6ICRFcnJvckJhbm5lclRpdGxlIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkJL2Jpbi9lY2hvICJDb21tYW5kOiBNYWluVGV4dDogJEVycm9yTWFpblRleHQiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCQkvYmluL2VjaG8gIlN0YXR1czogJEVycm9yU3RhdHVzIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkJc3VkbyAtdSAiJChHZXRDdXJyZW50VXNlcikiIG9wZW4gLWEgIiR7REVQTm90aWZ5UGF0aH0vJHtERVBOb3RpZnlBcHB9IiAtLWFyZ3MgLXBhdGggIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCS9iaW4vc2xlZXAgNQoJCWV4aXQgMQoJZmkKfQoKR2VuZXJhdGVQbGlzdENvbmZpZygpIHsKCSMgQ3JlYXRlcyB0aGUgLnBsaXN0IGZvciBERVBOb3RpZnkgdG8gdXNlIGZvciB2YXJpb3VzIGV4dHJhIHNldHRpbmdzLgoJCglERVBOb3RpZnlDb25maWdQbGlzdD0iL1VzZXJzLyQoR2V0Q3VycmVudFVzZXIpL0xpYnJhcnkvUHJlZmVyZW5jZXMvbWVudS5ub21hZC5ERVBOb3RpZnkucGxpc3QiCglMb2dnaW5nICJERVBOb3RpZnkgcHJlZmVyZW5jZXMgZmlsZSB3aWxsIGJlIHN0b3JlZCBhdCAkREVQTm90aWZ5Q29uZmlnUGxpc3QiCgkKCSMgV3JpdGVzIHNldHRpbmdzIGZvciBzdGF0dXMgdGV4dCBhbGlnbm1lbnQuCglMb2dnaW5nICJQbGlzdCBTZXR0aW5nOiBTZXR0aW5nIHN0YXR1c1RleHRBbGlnbm1lbnQgdG8gJFN0YXR1c1RleHRBbGlnbm1lbnQiCglkZWZhdWx0cyB3cml0ZSAiJERFUE5vdGlmeUNvbmZpZ1BsaXN0IiBzdGF0dXNUZXh0QWxpZ25tZW50ICIkU3RhdHVzVGV4dEFsaWdubWVudCIKCQoJIyBXcml0ZXMgc2V0dGluZ3MgZm9yIHRoZSBoZWxwIGJ1YmJsZS4KCWlmIFtbICIkRW5hYmxlSGVscEJ1YmJsZSIgPT0gdHJ1ZSBdXTsgdGhlbgoJCUxvZ2dpbmcgIlBsaXN0IFNldHRpbmc6IFNldHRpbmcgaGVscCBidWJibGUgb3B0aW9ucyIKCQlkZWZhdWx0cyB3cml0ZSAiJERFUE5vdGlmeUNvbmZpZ1BsaXN0IiBoZWxwQnViYmxlIC1hcnJheS1hZGQgIiRIZWxwQnViYmxlVGl0bGUiCgkJZGVmYXVsdHMgd3JpdGUgIiRERVBOb3RpZnlDb25maWdQbGlzdCIgaGVscEJ1YmJsZSAtYXJyYXktYWRkICIkSGVscEJ1YmJsZUJvZHkiCglmaQoJCgkjIFNldHMgb3duZXJzaGlwIGFuZCBwZXJtaXNzaW9ucyBvZiB0aGUgLnBsaXN0LgoJTG9nZ2luZyAiU2V0dGluZyBvd25lcnNoaXAgYW5kIHBlcm1pc3Npb25zIG9mICRERVBOb3RpZnlDb25maWdQbGlzdCIKCWNob3duICIkKEdldEN1cnJlbnRVc2VyKSI6c3RhZmYgIiRERVBOb3RpZnlDb25maWdQbGlzdCIKCWNobW9kIDYwMCAiJERFUE5vdGlmeUNvbmZpZ1BsaXN0Igp9CgpTZXRDb21wdXRlck5hbWUoKSB7CgkjIFNldHMgdGhlIGNvbXB1dGVyIG5hbWUuIEVuYWJsZVNldENvbXB1dGVyTmFtZSBtdXN0IGJlIHNldCB0byB0cnVlIGluIHRoZSBhbnN3ZXIgZmlsZTsgb3RoZXJ3aXNlLCBubyBuYW1lIGlzIHNldC4KCSMKCSMgSWYgRW5hYmxlU2V0Q29tcHV0ZXJOYW1lIGlzIHRydWUsIHRoZSBmb2xsb3dpbmcgbG9naWMgYXBwbGllczoKCSMgLSBFbmFibGVDdXN0b21Db21wdXRlck5hbWUKCSMJCWZhbHNlOiBTZXQgdGhlIG5hbWUgdG8gUHJlZml4U2VyaWFsTnVtYmVyCgkjCQl0cnVlOiBDaGVjayB0aGUgQ3VzdG9tQ29tcHV0ZXJTZXJpYWxzTGlzdCBhbmQgQ3VzdG9tQ29tcHV0ZXJOYW1lc0xpc3QgYXJyYXlzIGZvciBhIG1hdGNoIGFuZCByZW5hbWUgaWYgZm91bmQKCglpZiBbWyAkRW5hYmxlU2V0Q29tcHV0ZXJOYW1lID09IHRydWUgXV07IHRoZW4KCQkjIFNldHRpbmcgYSBjdXN0b20gbmFtZS4KCQlpZiBbWyAkRW5hYmxlQ3VzdG9tQ29tcHV0ZXJOYW1lID09IHRydWUgXV07IHRoZW4KCQkJTG9nZ2luZyAiQ3VzdG9tIG5hbWluZyBlbmFibGVkLCBjaGVja2luZyBNYWMgc2VyaWFsIG51bWJlciAkU2VyaWFsTnVtYmVyIgoJCQoJCQkjIENoZWNrIHRoZSBsaXN0IG9mIGtub3duIHNlcmlhbHMgZm9yIGEgbWF0Y2guCgkJCWZvciBpIGluICIkeyFDdXN0b21Db21wdXRlclNlcmlhbHNMaXN0W0BdfSI7IGRvCgkJCQlpZiBbWyAiICR7Q3VzdG9tQ29tcHV0ZXJTZXJpYWxzTGlzdFskaV19ICIgPX4gIiAkU2VyaWFsTnVtYmVyICIgXV07IHRoZW4KCQkJCQlMb2dnaW5nICJTZXJpYWwgJFNlcmlhbE51bWJlciBmb3VuZCBpbiBjdXN0b20gbmFtZXMgbGlzdCIKCQkJCQlNYXRjaEZvdW5kPXRydWUKCQkJCQlicmVhawoJCQkJZWxzZQoJCQkJCU1hdGNoRm91bmQ9ZmFsc2UKCQkJCWZpCgkJCWRvbmUKCQkJCgkJCWlmIFtbICRNYXRjaEZvdW5kID09IHRydWUgXV07IHRoZW4KCQkJCSMgTWFjIFNOIGlzIGluIHRoZSBsaXN0LCBjaGVja2luZyB0byBzZWUgaWYgdGhlcmUncyBhIGNvcnJlc3BvbmRpbmcgbmFtZS4KCQkJCWlmIFtbICR7Q3VzdG9tQ29tcHV0ZXJOYW1lc0xpc3RbJGldfSA9ICIiIF1dOyB0aGVuCgkJCQkJTG9nZ2luZyAiU2VyaWFsL25hbWUgbWF0Y2ggbm90IGZvdW5kIgoJCQkJCU1hY05hbWU9IiRDb21wdXRlck5hbWVQcmVmaXgkU2VyaWFsTnVtYmVyIgoJCQkJZWxzZQoJCQkJCU1hY05hbWU9IiR7Q3VzdG9tQ29tcHV0ZXJOYW1lc0xpc3RbJGldfSIKCQkJCQlMb2dnaW5nICJTZXJpYWwvbmFtZSBtYXRjaCBmb3VuZCAoJFNlcmlhbE51bWJlciwgJE1hY05hbWUpIgoJCQkJZmkKCQkJZWxzZQoJCQkJIyBNYWMgU04gbm90IG1hdGNoZWQsIHVzaW5nIHRoZSBkZWZhdWx0IG5hbWluZyBzY2hlbWUuCgkJCQlMb2dnaW5nICJObyBtYXRjaCwgZGVmYXVsdGluZyB0byAkQ29tcHV0ZXJOYW1lUHJlZml4JFNlcmlhbE51bWJlciIKCQkJCU1hY05hbWU9IiRDb21wdXRlck5hbWVQcmVmaXgkU2VyaWFsTnVtYmVyIgoJCQlmaQoJCWVsc2UKCQkJTG9nZ2luZyAiQ3VzdG9tIE1hYyBuYW1pbmcgbm90IGVuYWJsZWQsIHNldHRpbmcgbmFtZSB0byAkQ29tcHV0ZXJOYW1lUHJlZml4JFNlcmlhbE51bWJlciIKCQkJTWFjTmFtZT0iJENvbXB1dGVyTmFtZVByZWZpeCRTZXJpYWxOdW1iZXIiCgkJZmkKCQlMb2dnaW5nICJTZXR0aW5nIGNvbXB1dGVyIG5hbWUgdG8gJE1hY05hbWUiCgkJCgkJIyBTZXQgdGhlIGNvbXB1dGVyIG5hbWUgdXNpbmcgc2N1dGlsLgoJCS91c3Ivc2Jpbi9zY3V0aWwgLS1zZXQgQ29tcHV0ZXJOYW1lICIkTWFjTmFtZSIKCQkvdXNyL3NiaW4vc2N1dGlsIC0tc2V0IExvY2FsSG9zdE5hbWUgIiRNYWNOYW1lIgoJCS91c3Ivc2Jpbi9zY3V0aWwgLS1zZXQgSG9zdE5hbWUgIiRNYWNOYW1lIgoJCgkJIyBTZXQgdGhlIGNvbXB1dGVyIG5hbWUgdXNpbmcgSmFtZiBiaW5hcnkuCgkJIiRKYW1mQmluYXJ5UGF0aC8kSmFtZkJpbmFyeSIgc2V0Q29tcHV0ZXJOYW1lIC1uYW1lICIkTWFjTmFtZSIKCQlSZXR1cm49IiQ/IgoJCgkJaWYgW1sgIiRSZXR1cm4iIC1uZSAwIF1dOyB0aGVuCgkJCSMgTmFtaW5nIGZhaWxlZC4KCQkJTG9nZ2luZyAiRmFpbGVkIHRvIHNldCBjb21wdXRlciBuYW1lIHdpdGggSmFtZiBuYW1lIGNvbW1hbmQiCgkJCVJldHVybkNvZGU9IiRSZXR1cm4iCgkJZmkKCQoJCSMgRmx1c2ggRE5TIGNhY2hlLgoJCWRzY2FjaGV1dGlsIC1mbHVzaGNhY2hlCgllbHNlCgkJTG9nZ2luZyAiTm90IHNldHRpbmcgdGhlIGNvbXB1dGVyIG5hbWUiCglmaQp9CgpDdXN0b21CcmFuZGluZygpIHsKCSMgU2V0cyB1cCBicmFuZGluZyBmb3IgdGhlIERFUE5vdGlmeSB3aW5kb3cuCgkKCUxvZ2dpbmcgIlNldHRpbmcgdXAgYnJhbmRpbmcgZm9yIGJhbm5lciBpbWFnZSwgYmFubmVyIHRpdGxlIGFuZCBtYWluIHRleHQiCglpZiBbWyAiJEVuYWJsZUN1c3RvbUljb24iID09IHRydWUgXV07IHRoZW4KCQlMb2dnaW5nICJVc2luZyBhIGN1c3RvbSBpY29uIgoJCWlmIFtbICRDdXN0b21JY29uTG9jYXRpb24gPSBodHRwKiBdXTsgdGhlbgoJCQlMb2dnaW5nICJJY29uIGxvY2F0aW9uIGlzIGEgVVJMIgoJCQlpZiBbWyAhIC1kICIkQ3VzdG9tSWNvbkRvd25sb2FkUGF0aCIgXV07IHRoZW4KCQkJCUxvZ2dpbmcgIiRDdXN0b21JY29uRG93bmxvYWRQYXRoIG5vdCBmb3VuZCwgY3JlYXRpbmciCgkJCQlta2RpciAtcCAiJEN1c3RvbUljb25Eb3dubG9hZFBhdGgiCgkJCWZpCgkJCUxvZ2dpbmcgIkdyYWJiaW5nIGljb24gZnJvbSAkQ3VzdG9tSWNvbkxvY2F0aW9uIgoJCQljdXJsIC1MIC1vICIkQ3VzdG9tSWNvbkRvd25sb2FkUGF0aC8kQ3VzdG9tSWNvbkRvd25sb2FkRmlsZSIgJEN1c3RvbUljb25Mb2NhdGlvbgoJCQlpZiBbWyAtcyAiJEN1c3RvbUljb25Eb3dubG9hZFBhdGgvJEN1c3RvbUljb25Eb3dubG9hZEZpbGUiIF1dOyB0aGVuCgkJCQlMb2dnaW5nICJDdXN0b20gaWNvbiBzdWNjZXNzZnVsbHkgZG93bG9hZGVkIHRvICRDdXN0b21JY29uRG93bmxvYWRQYXRoLyRDdXN0b21JY29uRG93bmxvYWRGaWxlIgoJCQkJUG9saWN5RGVmYXVsdEljb249IiRDdXN0b21JY29uRG93bmxvYWRQYXRoLyRDdXN0b21JY29uRG93bmxvYWRGaWxlIgoJCQllbHNlCgkJCQlMb2dnaW5nICJGaWxlIGlzIGVtcHR5LCBkZWxldGluZyBhbmQgdXNpbmcgZGVmYXVsdCAkUG9saWN5RGVmYXVsdEljb24iCgkJCQlzdWRvIHJtIC1mICIke0N1c3RvbUljb25QYXRofS8ke0N1c3RvbUljb25GaWxlfSIKCQkJZmkKCQllbGlmIFtbICRDdXN0b21JY29uTG9jYXRpb24gPSAvKiBdXTsgdGhlbgoJCQlMb2dnaW5nICJJY29uIGlzIGxvY2FsIgoJCQlQb2xpY3lEZWZhdWx0SWNvbj0iJEN1c3RvbUljb25Mb2NhdGlvbiIKCQllbHNlCgkJCUxvZ2dpbmcgIkN1c3RvbSBpY29uIGxvY2F0aW9uIGlzIGludmFsaWQsIHVzaW5nICRQb2xpY3lEZWZhdWx0SWNvbiIKCQlmaQoJZWxzZQoJCUxvZ2dpbmcgIk5vdCB1c2luZyBhIGN1c3RvbSBpY29uLCB1c2luZyAkUG9saWN5RGVmYXVsdEljb24iCglmaQoJL2Jpbi9lY2hvICJDb21tYW5kOiBJbWFnZTogJFBvbGljeURlZmF1bHRJY29uIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkvYmluL2VjaG8gIkNvbW1hbmQ6IE1haW5UaXRsZTogJEJhbm5lclRpdGxlIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkvYmluL2VjaG8gIkNvbW1hbmQ6IE1haW5UZXh0OiAkTWFpblRleHQiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKfQoKTGF1bmNoREVQTm90aWZ5KCkgewoJIyBPcGVucyB0aGUgREVQTm90aXkgYXBwIGFmdGVyIGluaXRpYWwgY29uZmlndXJhdGlvbi4KCQoJTG9nZ2luZyAiUmVtb3ZpbmcgdGhlIHF1YXJhbnRpbmUgYml0IGZyb20gdGhlIERFUE5vdGlmeSBhcHAiCglzdWRvIHhhdHRyIC1yIC1kIGNvbS5hcHBsZS5xdWFyYW50aW5lICIke0RFUE5vdGlmeVBhdGh9LyR7REVQTm90aWZ5QXBwfSIKCUxvZ2dpbmcgIk9wZW5pbmcgREVQTm90aWZ5IGFzIHVzZXIgJChHZXRDdXJyZW50VXNlcikiCglpZiBbWyAiJEZ1bGxzY3JlZW4iID09IHRydWUgXV07IHRoZW4KCQlzdWRvIC11ICIkKEdldEN1cnJlbnRVc2VyKSIgL3Vzci9iaW4vb3BlbiAtYSAiJHtERVBOb3RpZnlQYXRofS8ke0RFUE5vdGlmeUFwcH0iIC0tYXJncyAtcGF0aCAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiIC1mdWxsU2NyZWVuCgllbGlmIFtbICIkRnVsbHNjcmVlbiIgPT0gZmFsc2UgXV07IHRoZW4KCQlzdWRvIC11ICIkKEdldEN1cnJlbnRVc2VyKSIgL3Vzci9iaW4vb3BlbiAtYSAiJHtERVBOb3RpZnlQYXRofS8ke0RFUE5vdGlmeUFwcH0iIC0tYXJncyAtcGF0aCAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCglmaQp9CgpHZXRERVBOb3RpZnlQcm9jZXNzKCkgewoJIyBHcmFiIHN0aGUgREVQTm90aWZ5IFBJRCBhbmQgY2FmZmVpbmF0ZXMgaXQuCgkKCURFUE5vdGlmeVByb2Nlc3M9JChwZ3JlcCAtbCAiREVQTm90aWZ5IiB8IGN1dCAtZCAiICIgLWYxKQoJdW50aWwgW1sgIiRERVBOb3RpZnlQcm9jZXNzIiAhPSAiIiBdXTsgZG8KCQlMb2dnaW5nICJXYWl0aW5nIGZvciBERVBOb3RpZnkgdG8gc3RhcnQgdG8gZ2F0aGVyIHRoZSBwcm9jZXNzIElEIgoJCS9iaW4vZWNobyAiJChHZXRUaW1lc3RhbXApIFdhaXRpbmcgZm9yIERFUE5vdGlmeSB0byBzdGFydCB0byBnYXRoZXIgdGhlIHByb2Nlc3MgSUQiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5RGVidWdMb2dGaWxlIgoJCS9iaW4vc2xlZXAgMQoJCURFUE5vdGlmeVByb2Nlc3M9JChwZ3JlcCAtbCAiREVQTm90aWZ5IiB8IGN1dCAtZCAiICIgLWYxKQoJZG9uZQoJaWYgW1sgIiRFbmFibGVOb1NsZWVwIiA9PSB0cnVlIF1dOyB0aGVuCgkJTG9nZ2luZyAiQ2FmZmVpbmF0aW5nIERFUE5vdGlmeSBwcm9jZXNzIChQSUQ6ICRERVBOb3RpZnlQcm9jZXNzKSIKCQljYWZmZWluYXRlIC1kaXN1IC13ICIkREVQTm90aWZ5UHJvY2VzcyIgJgoJZmkKfQoKUHJldHR5UGF1c2UoKSB7CgkjIEFkZHMgYW4gaW5pdGlhbCBzdGF0dXMgdGV4dCBhbmQgYSBicmllZiBwYXVzZSBmb3IgcHJldHRpbmVzcy4KCQoJL2Jpbi9lY2hvICJTdGF0dXM6ICRJbml0aWFsU3RhcnRTdGF0dXMiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCS9iaW4vc2xlZXAgMwp9CgpHZW5lcmF0ZVN0YXR1c0JhcigpIHsKCSMgU2V0cyB1cCB0aGUgc3RhdHVzIGJhci4KCQoJIyBJbmNyZW1lbnRzIHRoZSBzdGF0dXMgY291bnRlciBieSAxIHRvIGFjY291bnQgZm9yIHRoZSBKYW1mIHJlY29uIHRoYXQgcnVucyBhdCB0aGUgZW5kIG9mIHRoaXMgc2NyaXB0LgoJQWRkaXRpb25hbE9wdGlvbnNDb3VudGVyPTEKCUFkZGl0aW9uYWxPcHRpb25zQ291bnRlcj0kKChBZGRpdGlvbmFsT3B0aW9uc0NvdW50ZXIrKykpCgkKCSMgQ2hlY2tzIHRoZSBwb2xpY3kgYXJyYXkgYW5kIGFkZHMgdGhlIGNvdW50IGZyb20gdGhlIGFkZGl0aW9uYWwgb3B0aW9ucyBhYm92ZS4KCVBvbGljaWVzTGlzdExlbmd0aD0iJCgoJHsjUG9saWNpZXNMaXN0W0BdfSArIEFkZGl0aW9uYWxPcHRpb25zQ291bnRlcikpIgoJL2Jpbi9lY2hvICJDb21tYW5kOiBEZXRlcm1pbmF0ZTogJFBvbGljaWVzTGlzdExlbmd0aCIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgp9CgpSdW5KYW1mUG9saWNpZXMoKSB7CgkjIEluc3RhbGxzIHBvbGljaWVzIGJ5IGxvb3BpbmcgdGhyb3VnaCB0aGUgcG9saWN5IGFycmF5LgoJCglMb2dnaW5nICItLS0gU1RBUlQgUE9MSUNJRVMgLS0tIgoJTG9nZ2luZyAiUHJlcGFyaW5nIHRvIHJ1biBKYW1mIHBvbGljaWVzIgoJZm9yIHBvbGljeSBpbiAiJHtQb2xpY2llc0xpc3RbQF19IjsgZG8KCQlQb2xpY3lTdGF0dXM9JCgvYmluL2VjaG8gIiRwb2xpY3kiIHwgY3V0IC1kICcsJyAtZjEpCgkJUG9saWN5VHlwZT0kKC9iaW4vZWNobyAiJHBvbGljeSIgfCBjdXQgLWQgJywnIC1mMikKCQlQb2xpY3lOYW1lPSQoL2Jpbi9lY2hvICIkcG9saWN5IiB8IGN1dCAtZCAnLCcgLWYzKQoJCVBvbGljeUljb249JCgvYmluL2VjaG8gIiRwb2xpY3kiIHwgY3V0IC1kICcsJyAtZjQpCgkJTG9nZ2luZyAiLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSIKCQlMb2dnaW5nICJDYWxsaW5nIHBvbGljeSAkUG9saWN5U3RhdHVzIgoJCUxvZ2dpbmcgIlBvbGljeSB0eXBlIGlzOiAkUG9saWN5VHlwZSIKCQkvYmluL2VjaG8gIlN0YXR1czogJFBvbGljeVN0YXR1cyIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCWlmIFtbICIkUG9saWN5SWNvbiIgPSAiIiBdXSB8fCBbWyAhIC1mICIkUG9saWN5SWNvbiIgXV07IHRoZW4KCQkJIyBJY29uIHBhdGgvZmlsZSBpcyBlaXRoZXIgbm90IHNldCBvciBub3QgZm91bmQ7IHNldCB0byBQb2xpY3lEZWZhdWx0SWNvbi4KCQkJL2Jpbi9lY2hvICJDb21tYW5kOiBJbWFnZTogJFBvbGljeURlZmF1bHRJY29uIiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkJZWxzZQoJCQkjIEljb24gZm91bmQKCQkJL2Jpbi9lY2hvICJDb21tYW5kOiBJbWFnZTogJFBvbGljeUljb24iID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCQlmaQoJCWlmIFtbICRQb2xpY3lUeXBlID0gImV2ZW50IiBdXTsgdGhlbgoJCQkiJEphbWZCaW5hcnlQYXRoLyRKYW1mQmluYXJ5IiBwb2xpY3kgLWV2ZW50ICIkUG9saWN5TmFtZSIgfCAvdXNyL2Jpbi9zZWQgLWUgInMvXi8kKEdldFRpbWVzdGFtcCkgLyIgfCAvdXNyL2Jpbi90ZWUgLWEgIiRFbnJvbGxtZW50TG9nUGF0aC8kRW5yb2xsbWVudExvZ0ZpbGUiID4vZGV2L251bGwgMj4mMQoJCWVsaWYgW1sgJFBvbGljeVR5cGUgPSAiaWQiIF1dOyB0aGVuCgkJCSIkSmFtZkJpbmFyeVBhdGgvJEphbWZCaW5hcnkiIHBvbGljeSAtaWQgIiRQb2xpY3lOYW1lIiB8IC91c3IvYmluL3NlZCAtZSAicy9eLyQoR2V0VGltZXN0YW1wKSAvIiB8IC91c3IvYmluL3RlZSAtYSAiJEVucm9sbG1lbnRMb2dQYXRoLyRFbnJvbGxtZW50TG9nRmlsZSIgPi9kZXYvbnVsbCAyPiYxCgkJZWxzZQoJCQlMb2dnaW5nICJJbnZhbGlkIHBvbGljeSB0eXBlIG9yIG5vIHBvbGljeSB0eXBlIHNwZWNpZmllZCIKCQlmaQoJZG9uZQoJTG9nZ2luZyAiLS0tIEVORCBQT0xJQ0lFUyAtLS0iCn0KCkNoZWNrSmFtZkNvbm5lY3RMb2dpbldpbmRvdygpIHsKCSMgUmVzZXRzIHRoZSBsb2dpbiB3aW5kb3cgdG8gbWFjT1MgZGVmYXVsdCBpZiBSZXNldEphbWZDb25uZWN0TG9naW4gaXMgdHJ1ZSBhbmQgSmFtZiBDb25uZWN0IGlzIGluc3RhbGxlZC4KCglpZiBbWyAiJFJlc2V0SmFtZkNvbm5lY3RMb2dpbiIgPT0gdHJ1ZSBdXTsgdGhlbgoJCWlmIFtbIC1lICIkQXV0aGNoYW5nZXJCaW5hcnkiIF1dOyB0aGVuCgkJCUxvZ2dpbmcgIkludm9raW5nIEphbWYgQ29ubmVjdCBhdXRoY2hhbmdlciBhbmQgcmVzZXR0aW5nIGxvZ2luIHdpbmRvdyB0byBtYWNPUyBkZWZhdWx0IgoJCQkiJEF1dGhjaGFuZ2VyQmluYXJ5IiAtcmVzZXQKCQllbHNlCgkJCUxvZ2dpbmcgIlJlc2V0SmFtZkNvbm5lY3RMb2dpbiBpcyBzZXQgdG8gdHJ1ZSBidXQgYXV0aGNoYW5nZXIgYmluYXJ5IG5vdCBmb3VuZCBhdCAkQXV0Y2hhbmdlckJpbmFyeSIKCQlmaQoJZmkKfQoKQ3JlYXRlU3R1YkZpbGVzKCkgewoJIyBDcmVhdGUgc3R1YiBmaWxlcyBiYXNlZCBvbiB0aGUgU3R1YkZpbGVzTGlzdCBhcnJheS4KCQoJTG9nZ2luZyAiU3R1YiBGaWxlcyBDcmVhdGlvbiIKCWlmIFtbICIkRW5hYmxlQ3JlYXRlU3R1YkZpbGVzIiA9PSB0cnVlIF1dOyB0aGVuCgkJZm9yIEZpbGUgaW4gIiR7U3R1YkZpbGVzTGlzdFtAXX0iOyBkbwoJCQlMb2dnaW5nICJDcmVhdGluZyBzdHViIGZpbGUgJEZpbGUiCgkJCS91c3IvYmluL3RvdWNoICIke0ZpbGV9IgoJCWRvbmUKCWZpCn0KCkphbWZDaGVja0luKCkgewoJIyBGb3JjZXMgdGhlIE1hYyB0byBjaGVjayBpbiB0byBKYW1mIGFuZCBzdWJtaXQgaW52ZW50b3J5LgoJCgkvYmluL2VjaG8gIlN0YXR1czogU3VibWl0dGluZyBkZXZpY2UgaW52ZW50b3J5IHRvIEphbWYiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCWlmIFtbICIkVXBkYXRlVXNlcm5hbWVJbnZlbnRvcnlSZWNvcmQiID09IHRydWUgXV07IHRoZW4KCQlMb2dnaW5nICJTdWJtaXR0aW5nIGRldmljZSBpbnZlbnRvcnkgdG8gSmFtZiBhbmQgdXBkYXRpbmcgdGhlIE1hYydzIHJlY29yZCB3aXRoIHVzZXJuYW1lIGFuZCByZWFsIG5hbWUgaW5mbyIKCQkiJEphbWZCaW5hcnlQYXRoLyRKYW1mQmluYXJ5IiByZWNvbiAtZW5kVXNlcm5hbWUgIiQoR2V0Q3VycmVudFVzZXIpIiAtcmVhbG5hbWUgIiQoR2V0UmVhbE5hbWUpIgoJZWxzZQoJCUxvZ2dpbmcgIlN1Ym1pdHRpbmcgZGV2aWNlIGludmVudG9yeSB0byBKYW1mIgoJCSIkSmFtZkJpbmFyeVBhdGgvJEphbWZCaW5hcnkiIHJlY29uCglmaQp9CgpTY3JpcHRDb21wbGV0aW9uKCkgewoJIyBTZXRzIHNjcmlwdCBjb21wbGV0aW9uIHRleHQsIGJ1dHRvbiBhbmQgcmVzdGFydCBiZWhhdmlvcnMuCgoJL2Jpbi9lY2hvICJTdGF0dXM6ICRJbnN0YWxsQ29tcGxldGVUZXh0IiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCglpZiBbWyAiJFJlc3RhcnRXaGVuRG9uZSIgPT0gdHJ1ZSBdXTsgdGhlbgoJCWlmIFtbICIkRW5hYmxlUmVzdGFydFRpbWVyIiA9PSB0cnVlIF1dOyB0aGVuCgkJCUxvZ2dpbmcgIlNjcmlwdCBDb21wbGV0aW9uOiBBdXRvbWF0aWMgUmVzdGFydCB3aXRoICQoR2V0VGltZXJOb3VuICRSZXN0YXJ0VGltZXIpIGRlbGF5IgoJCQkvYmluL2VjaG8gIkNvbW1hbmQ6IE1haW5UZXh0OiAkUmVzdGFydFRpbWVyVGV4dCIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCQlUaW1lcj0kUmVzdGFydFRpbWVyCgkJCXVudGlsIFtbICRUaW1lciA9IDAgXV07IGRvCgkJCQlpZiBbWyAkVGltZXIgPSAxIF1dOyB0aGVuCgkJCQkJL2Jpbi9lY2hvICJTdGF0dXM6IFJlc3RhcnRpbmcgaW4gJChHZXRUaW1lck5vdW4gJFRpbWVyKSIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCQkJCS9iaW4vc2xlZXAgMQoJCQkJZWxzZQoJCQkJCS9iaW4vZWNobyAiU3RhdHVzOiBSZXN0YXJ0aW5nIGluICQoR2V0VGltZXJOb3VuICRUaW1lcikiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCQkJCQkvYmluL3NsZWVwIDEKCQkJCWZpCgkJCQlUaW1lcj0kKChUaW1lci0xKSkKCQkJZG9uZQoJCQl0b3VjaCAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeURvbmVCT00iCgkJCS9iaW4vZWNobyAiQ29tbWFuZDogUXVpdCIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCWVsc2UKCQkJTG9nZ2luZyAiU2NyaXB0IENvbXBsZXRpb246IFJlc3RhcnQgd2l0aCBCdXR0b24iCgkJCXRvdWNoICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5RG9uZUJPTSIKCQkJL2Jpbi9lY2hvICJDb21tYW5kOiBNYWluVGV4dDogJENvbXBsZXRpb25SZXN0YXJ0TWFpblRleHQiID4+ICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIKCQkJL2Jpbi9lY2hvICJDb21tYW5kOiBDb250aW51ZUJ1dHRvbjogJENvbXBsZXRpb25SZXN0YXJ0QnV0dG9uVGV4dCIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJCWZpCgkJTG9nZ2luZyAiU2V0dGluZyB1cCByZXN0YXJ0IGJlaGF2aW9yIgoJCWlmIFtbICIkRW5hYmxlTURNUmVzdGFydCIgPT0gdHJ1ZSBdXTsgdGhlbgoJCQlMb2dnaW5nICJSZXN0YXJ0IENvbW1hbmQ6IEphbWYgcG9saWN5ICRNRE1SZXN0YXJ0Q29tbWFuZFBvbGljeSIKCQllbHNlCgkJCUxvZ2dpbmcgIlJlc3RhcnQgQ29tbWFuZDogc2h1dGRvd24gLXIgbm93IgoJCWZpCgllbHNlCgkJTG9nZ2luZyAiU2NyaXB0IENvbXBsZXRpb246IFF1aXQgQnV0dG9uIHdpdGggTGFiZWwiCgkJdG91Y2ggIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlEb25lQk9NIgoJCS9iaW4vZWNobyAiQ29tbWFuZDogTWFpblRleHQ6ICRDb21wbGV0aW9uUXVpdE1haW5UZXh0IiA+PiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ0ZpbGUiCgkJL2Jpbi9lY2hvICJDb21tYW5kOiBDb250aW51ZUJ1dHRvbjogJENvbXBsZXRpb25RdWl0QnV0dG9uVGV4dCIgPj4gIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dGaWxlIgoJZmkKfQoKREVQTm90aWZ5Q2xlYW51cCgpIHsKCSMgUmVtb3ZlcyB0aGUgZmlsZXMgYW5kIGRpcmVjdG9yaWVzIGxlZnQgYmVoaW5kIGJ5IERFUE5vdGlmeSBvbmNlIHRoZSBNYWMgc2V0dXAgaXMgY29tcGxldGUuCgkKCUxvZ2dpbmcgIi0tLSBTVEFSVCBERVBOT1RJRlkgQ0xFQU5VUCAtLS0iCgoJIyBXYWl0cyBmb3IgdGhlIERFUE5vdGlmeSB3aW5kb3cgdG8gY2xvc2UuCgl3aGlsZSBbWyAhIC1mICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nb3V0Qk9NIiBdXSB8fCBbWyAhIC1mICIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5RG9uZUJPTSIgXV07IGRvCgkJTG9nZ2luZyAiREVQTm90aWZ5IENsZWFudXA6IFdhaXRpbmcgZm9yIENvbXBsZXRpb24gZmlsZSIKCQlMb2dnaW5nICJERVBOb3RpZnkgQ2xlYW51cDogVGhlIHVzZXIgaGFzIG5vdCBjbG9zZWQgdGhlIERFUE5vdGlmeSB3aW5kb3ciCgkJTG9nZ2luZyAiREVQTm90aWZ5IENsZWFudXA6IFdhaXRpbmcgJChHZXRUaW1lck5vdW4gMSkiCgkJL2Jpbi9zbGVlcCAxCgkJaWYgW1sgLWYgIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlEb25lQk9NIiBdXTsgdGhlbgoJCQlMb2dnaW5nICJERVBOb3RpZnkgQ2xlYW51cDogRm91bmQgJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeURvbmVCT00iCgkJCWJyZWFrCgkJZmkKCQlpZiBbWyAtZiAiJERFUE5vdGlmeVRtcFBhdGgvJERFUE5vdGlmeUxvZ291dEJPTSIgXV07IHRoZW4KCQkJTG9nZ2luZyAiREVQTm90aWZ5IENsZWFudXA6IEZvdW5kICRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlMb2dvdXRCT00iCgkJCWJyZWFrCgkJZmkKCWRvbmUKCQoJIyBSZW1vdmVzIHRoZSBERVBOb3RpZnkgTGF1bmNoRGFlbW9uLgoJaWYgW1sgLWUgIiRERVBOb3RpZnlMYXVuY2hEYWVtb25QYXRoLyRERVBOb3RpZnlMYXVuY2hEYWVtb25GaWxlIiBdXTsgdGhlbgoJCUxvZ2dpbmcgIkRFUE5vdGlmeSBDbGVhbnVwOiBSZW1vdmluZyBMYXVuY2hEYWVtb24iCgkJbGF1bmNoY3RsIGJvb3RvdXQgc3lzdGVtICIkREVQTm90aWZ5TGF1bmNoRGFlbW9uUGF0aC8kREVQTm90aWZ5TGF1bmNoRGFlbW9uRmlsZSIKCQkvYmluL3JtIC1SICIkREVQTm90aWZ5TGF1bmNoRGFlbW9uUGF0aC8kREVQTm90aWZ5TGF1bmNoRGFlbW9uRmlsZSIKCWVsc2UKCQlMb2dnaW5nICJERVBOb3RpZnkgQ2xlYW51cDogTGF1bmNoRGFlbW9uIG5vdCBpbnN0YWxsZWQiCglmaQoJCQoJIyBMb29wcyB0aHJvdWdoIGFuZCByZW1vdmUgYWxsIGZpbGVzIGFzc29jaWF0ZWQgd2l0aCBERVBOb3RpZnkuCQoJZm9yIGkgaW4gXAoJCSIkREVQTm90aWZ5UGF0aC8kREVQTm90aWZ5QXBwIiBcCgkJIiRERVBOb3RpZnlTY3JpcHRzUGF0aC8kREVQTm90aWZ5RW5yb2xsbWVudFN0YXJ0U2NyaXB0IiBcCgkJIiRERVBOb3RpZnlTY3JpcHRzUGF0aC8kREVQTm90aWZ5RW5yb2xsbWVudEluc3RhbGxlckVycm9yIiBcCgkJIiRERVBOb3RpZnlTY3JpcHRzUGF0aC8kREVQTm90aWZ5RW5yb2xsbWVudEluc3RhbGxlck91dCIgXAoJCSIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nRmlsZSIgXAoJCSIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5RGVidWdMb2dGaWxlIiBcCgkJIi9Vc2Vycy8kKEdldEN1cnJlbnRVc2VyKS9MaWJyYXJ5L1ByZWZlcmVuY2VzLyRERVBOb3RpZnlOZXdQbGlzdCIgXAoJCSIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5RG9uZUJPTSIgXAoJCSIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5TG9nb3V0Qk9NIiBcCgkJIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlSZXN0YXJ0Qk9NIiBcCgkJIiRERVBOb3RpZnlUbXBQYXRoLyRERVBOb3RpZnlBZ3JlZUJPTSIgXAoJCSIkREVQTm90aWZ5VG1wUGF0aC8kREVQTm90aWZ5UmVnaXN0cmF0aW9uRG9uZUJPTSI7IGRvCgkJCUxvZ2dpbmcgIkNoZWNraW5nIGZvciAkaSIKCQkJaWYgW1sgLWUgIiRpIiBdXSB8fCBbWyAtZCAiJGkiIF1dOyB0aGVuCgkJCQkjIFJlbW92ZXMgREVQTm90aWZ5IG9iamVjdHMgaWYgdGhleSBleGlzdC4KCQkJCUxvZ2dpbmcgIkRFUE5vdGlmeSBDbGVhbnVwOiBBdHRlbXB0aW5nIHRvIHJlbW92ZSAkaSIKCQkJCS9iaW4vcm0gLVIgIiRpIgoJCQkJUmV0dXJuPSIkPyIKCQkJCWlmIFtbICIkUmV0dXJuIiAtbmUgMCBdXTsgdGhlbgoJCQkJCSMgTG9ncyB0aGF0IGFuIGVycm9yIG9jY3VyZWQgd2hpbGUgcmVtb3ZpbmcgYW4gb2JqZWN0LgoJCQkJCUxvZ2dpbmcgIkRFUE5vdGlmeSBDbGVhbnVwOiBVbmFibGUgdG8gcmVtb3ZlICRpIiAiRVJST1IiCgkJCQkJcmV0dXJuICIkUmV0dXJuIgoJCQkJZmkKCQkJZWxzZQoJCQkJIyBGaWxlIG9yIGRpcmVjdG9yeSBub3QgZm91bmQuCQkJCQoJCQkJTG9nZ2luZyAiREVQTm90aWZ5IENsZWFudXA6ICRpIG5vdCBmb3VuZCIgIklORk8iCgkJCWZpCgkJZG9uZQoJTG9nZ2luZyAiLS0tIEVORCBERVBOT1RJRlkgQ0xFQU5VUCAtLS0iCn0KClJlc3RhcnRDb21tYW5kKCkgewoJIyBQZXJmb3JtcyBhbiBNRE0gY29tbWFuZCByZXN0YXJ0IGlmIFJlc3RhcnRXaGVuRG9uZSBpcyB0cnVlLgoJIyBJZiBFbmFibGVNRE1SZXN0YXJ0IGlzIHNldCwgY2FsbHMgdGhlIHNwZWNpZmllZCBwb2xpY3kgdG8gcGVyZm9ybSB0aGUgTURNIHJlc3RhcnQ7IG90aGVyd2lzZSwgcGVyZm9ybXMgYSByZWd1bGFyIHJlc3RhcnQuCgkKCWlmIFtbICIkUmVzdGFydFdoZW5Eb25lIiA9PSB0cnVlIF1dOyB0aGVuCgkJaWYgW1sgIiRFbmFibGVNRE1SZXN0YXJ0IiA9PSB0cnVlIF1dOyB0aGVuCgkJCSIkSmFtZkJpbmFyeVBhdGgvJEphbWZCaW5hcnkiIHBvbGljeSAtZXZlbnQgIiRNRE1SZXN0YXJ0Q29tbWFuZFBvbGljeSIKCQllbHNlCgkJCXN1ZG8gc2h1dGRvd24gLXIgbm93CgkJZmkKCWZpCn0KCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIyBNQUlOCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKTG9nZ2luZ0hlYWRlcgpDaGVja0ZvckFwcGxlU2lsaWNvbgpWYWxpZGF0ZVRydWVGYWxzZUZsYWdzCkdldFNldHVwQXNzaXN0YW50UHJvY2VzcwpXYWl0Rm9yQ3VycmVudFVzZXIKR2V0RmluZGVyUHJvY2VzcwpDaGVja0ZvckRFUE5vdGlmeQpDaGVja0ZvckRFUE5vdGlmeUJPTXMKR2VuZXJhdGVQbGlzdENvbmZpZwpTZXRDb21wdXRlck5hbWUKQ3VzdG9tQnJhbmRpbmcKTGF1bmNoREVQTm90aWZ5CkdldERFUE5vdGlmeVByb2Nlc3MKR2VuZXJhdGVTdGF0dXNCYXIKUHJldHR5UGF1c2UKUnVuSmFtZlBvbGljaWVzCkNoZWNrSmFtZkNvbm5lY3RMb2dpbldpbmRvdwpDcmVhdGVTdHViRmlsZXMKSmFtZkNoZWNrSW4KU2NyaXB0Q29tcGxldGlvbgpERVBOb3RpZnlDbGVhbnVwCkxvZ2dpbmdGb290ZXIKUmVzdGFydENvbW1hbmQKCmV4aXQgMAkjIFN1Y2Nlc3MKZXhpdCAxCSMgRmFpbHVyZQ==</script_contents_encoded>
+</script>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>CIS - Audit List</name>
+    <enabled>true</enabled>
+    <description>CIS Security Reporting - List Risks</description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+# Security Reporting - List Risks
+
+auditfile=/Library/Application\ Support/SecurityScoring/org_audit
+echo "&lt;result&gt;$(cat "$auditfile")&lt;/result&gt;"</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

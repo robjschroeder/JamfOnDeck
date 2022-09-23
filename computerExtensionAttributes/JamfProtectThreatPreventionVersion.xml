@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>Jamf Protect - Threat Prevention Version</name>
+    <enabled>true</enabled>
+    <description>Displays the Threat Prevention Version of Jamf Protect</description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/sh
+
+#Jamf Protect Location
+jamfProtectBinaryLocation="/usr/local/bin/protectctl"
+
+if [ -f "$jamfProtectBinaryLocation" ]; then
+    plist=$($jamfProtectBinaryLocation info --plist)
+    jamfProtectThreatPreventionVersion=$(/usr/libexec/PlistBuddy -c "Print Monitors:execAuth:stats:signatureFeed:version" /dev/stdin &lt;&lt;&lt;"$plist")
+else
+	jamfProtectThreatPreventionVersion="Protect binary not found"
+fi
+
+echo "&lt;result&gt;$jamfProtectThreatPreventionVersion&lt;/result&gt;"
+</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

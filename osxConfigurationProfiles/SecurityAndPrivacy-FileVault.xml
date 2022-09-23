@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<os_x_configuration_profile>
+  <general>
+    <name>Security and Privacy - FileVault</name>
+    <description>Enables and manages FileVault encryption on macOS computers. Personal Recovery Key will be escrowed within Jamf Pro and enablement will be required upon next login. </description>
+    <site>
+      <name>None</name>
+    </site>
+    <category>
+      <name>Security</name>
+    </category>
+    <distribution_method>Install Automatically</distribution_method>
+    <user_removable>false</user_removable>
+    <level>System</level>
+    <uuid>C95CF4C6-A143-45B1-B44E-C4B55A18918C</uuid>
+    <redeploy_on_update>Newly Assigned</redeploy_on_update>
+    <payloads>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1"&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;C95CF4C6-A143-45B1-B44E-C4B55A18918C&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;Configuration&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Insight - USA&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;C95CF4C6-A143-45B1-B44E-C4B55A18918C&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Security and Privacy - FileVault&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string/&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadRemovalDisallowed&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadScope&lt;/key&gt;&lt;string&gt;System&lt;/string&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;515851b2-9b26-4739-9801-0675a7584316&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.security.pkcs1&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Insight - USA&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;5CF64825-3811-456F-94AE-5A526DE50670&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;JSS FileVault Recovery Key Escrow Certificate&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string/&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadCertificateFileName&lt;/key&gt;&lt;string&gt;FileVault2Comm.cer&lt;/string&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;data&gt;MIIDtTCCAp2gAwIBAgIENey3TTANBgkqhkiG9w0BAQsFADA7MTkwNwYDVQQDEzBJbnNpZ2h0IC0gVVNBIEpTUyBCdWlsdC1pbiBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkwHhcNMjIwNjA5MTkyNTM5WhcNMjcwNjExMTkyNTM5WjBEMRcwFQYDVQQLEw5GSUxFVkFVTFQyQ09NTTEpMCcGA1UEAxMgSlNTIEJ1aWx0LUluIFNpZ25pbmcgQ2VydGlmaWNhdGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCIkMD/mPIjYh1j3MhdBqKT+JU8BhX4/sXG7kIHtwYI6VyAGp8ozBA5aQ1YcUWxebkWeQXqL1ukPHMJ1fbvu4CclyItSQJFr2mvRW0mvnnkPg3roKxo952HsneN2oVFMC553OPZSIDnkhqUzKq6VSxNi1QvZr5862wD1N7WZ+FetmziDbueEKsK9x6YYgYIBRq2wcKlbF8Mf0abHx2I4VDLoBQ4k983oGUP1eb7B4b8r73xz6GzIxdo+AGWAXWao27CdIag86trbEv0a6MwHhF9yQaS7fyGfpwZLw9m4cKWJjll8kEjHsLxv3MjYusUzTNzfqSe0hhmh5PEXTJcovY9AgMBAAGjgbcwgbQwHQYDVR0OBBYEFJwacjCMY+wXWFM4H/lOfO0Hh7VCMBMGA1UdJQQMMAoGCCsGAQUFBwMBMA4GA1UdDwEB/wQEAwIBpjAMBgNVHRMBAf8EAjAAMD8GA1UdHwQ4MDYwNKAyoDCGLmh0dHBzOi8vaW1hZGV2LmphbWZjbG91ZC5jb20vQ0EvSkFNRkNSTFNlcnZsZXQwHwYDVR0jBBgwFoAUS4wy2abuh5rv4+N8MPZU/FaYc7IwDQYJKoZIhvcNAQELBQADggEBABAASOZgAsGeEXJbdyTxEPI3wCNAxMyBpatx4ucgUi1S1qUtGZsYp4KIKUA1GmNtkRwsxD7z0rUNObCxefFsHPplAWEkfsLOxZYUWMizmLn6dwJ0MNRGdruBxxZ5ha/786tJkHnWmYGm1Pk+5zCIPOcwNu5CShKsn5AbKkfcY5yY4T07XsIN3p2kWMnRapOfgu+nkIS7djwswBuRwyVbZjNOgs7bkXx9VKAk6v7dXVXzUWINaaosVYGCi6zn98+lB75e+kFhnMiX7B7tkniaudQeXtwwU/VE8b6/26swfBK5EYXkRQqwMyDBYLjt502FIfTp88jdUFgXKaM+Q49uICI=&lt;/data&gt;&lt;key&gt;AllowAllAppsAccess&lt;/key&gt;&lt;false/&gt;&lt;/dict&gt;&lt;dict&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;MCX&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;1AD8E5C3-7A42-4EF6-85F5-809D10992878&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;JAMF Software&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.MCX&lt;/string&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;1AD8E5C3-7A42-4EF6-85F5-809D10992878&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;dontAllowFDEDisable&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;dict&gt;&lt;key&gt;EncryptCertPayloadUUID&lt;/key&gt;&lt;string&gt;515851b2-9b26-4739-9801-0675a7584316&lt;/string&gt;&lt;key&gt;Location&lt;/key&gt;&lt;string&gt;JamfPro&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;FileVault Recovery Key Escrow&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;4C2313A0-5522-4A45-B7B0-C230F1A0951A&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;JAMF Software&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.security.FDERecoveryKeyEscrow&lt;/string&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;4C2313A0-5522-4A45-B7B0-C230F1A0951A&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;/dict&gt;&lt;dict&gt;&lt;key&gt;Defer&lt;/key&gt;&lt;true/&gt;&lt;key&gt;DeferDontAskAtUserLogout&lt;/key&gt;&lt;true/&gt;&lt;key&gt;DeferForceAtUserLoginMaxBypassAttempts&lt;/key&gt;&lt;integer&gt;0&lt;/integer&gt;&lt;key&gt;Enable&lt;/key&gt;&lt;string&gt;On&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;FileVault&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;79706317-D969-456F-9749-97AF75B5DFA5&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;JAMF Software&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.MCX.FileVault2&lt;/string&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;79706317-D969-456F-9749-97AF75B5DFA5&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;ShowRecoveryKey&lt;/key&gt;&lt;false/&gt;&lt;key&gt;UseRecoveryKey&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;</payloads>
+  </general>
+  <scope>
+    <all_computers>true</all_computers>
+    <all_jss_users>false</all_jss_users>
+    <computers/>
+    <buildings/>
+    <departments/>
+    <computer_groups/>
+    <jss_users/>
+    <jss_user_groups/>
+    <limitations>
+      <users/>
+      <user_groups/>
+      <network_segments/>
+      <ibeacons/>
+    </limitations>
+    <exclusions>
+      <computers/>
+      <buildings/>
+      <departments/>
+      <computer_groups/>
+      <users/>
+      <user_groups/>
+      <network_segments/>
+      <ibeacons/>
+      <jss_users/>
+      <jss_user_groups/>
+    </exclusions>
+  </scope>
+  <self_service>
+    <self_service_display_name>Security and Privacy - FileVault</self_service_display_name>
+    <install_button_text>Install</install_button_text>
+    <self_service_description/>
+    <force_users_to_view_description>false</force_users_to_view_description>
+    <security>
+      <removal_disallowed>Never</removal_disallowed>
+    </security>
+    <self_service_icon/>
+    <feature_on_main_page>false</feature_on_main_page>
+    <self_service_categories>
+      <category>
+        <name>Security</name>
+        <display_in>true</display_in>
+        <feature_in>false</feature_in>
+      </category>
+    </self_service_categories>
+  </self_service>
+</os_x_configuration_profile>

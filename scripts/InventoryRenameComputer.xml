@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<script>
+    <name>Inventory - Rename Computer</name>
+    <category>Inventory</category>
+    <filename>Inventory - Rename Computer</filename>
+    <info>This script will rename the computer to match the serial number of the computer. </info>
+    <notes></notes>
+    <priority>After</priority>
+    <parameters></parameters>
+    <os_requirements></os_requirements>
+    <script_contents>#!/bin/sh
+
+# Renames computer locally to the serial number
+# of the computer, then updates the Jamf Pro record
+#
+# Created: 05.03.2022 @ Robjschroeder
+
+# Get the serial number of the computer
+serial=$(/usr/sbin/system_profiler SPHardwareDataType | awk '/Serial/ {print $NF}')
+
+# Get original name of computer
+oldComputerName=$(/usr/sbin/scutil --get ComputerName)
+
+# Generate new computer name
+computerName=${serial}
+
+# Set new computer name locally
+/usr/sbin/scutil --set ComputerName ${computerName}
+
+/usr/sbin/scutil --set HostName ${computerName}
+
+/usr/sbin/scutil --set LocalHostName ${computerName}
+
+# Set the computer name in Jamf to reflect what is set locally on the computer
+/usr/local/bin/jamf setComputerName -name ${computerName}
+/usr/local/bin/jamf recon
+
+echo "Computer name has been changed from ${oldComputerName} to ${computerName}"
+
+exit 0</script_contents>
+    <script_contents_encoded>IyEvYmluL3NoCgojIFJlbmFtZXMgY29tcHV0ZXIgbG9jYWxseSB0byB0aGUgc2VyaWFsIG51bWJlcgojIG9mIHRoZSBjb21wdXRlciwgdGhlbiB1cGRhdGVzIHRoZSBKYW1mIFBybyByZWNvcmQKIwojIENyZWF0ZWQ6IDA1LjAzLjIwMjIgQCBSb2Jqc2Nocm9lZGVyCgojIEdldCB0aGUgc2VyaWFsIG51bWJlciBvZiB0aGUgY29tcHV0ZXIKc2VyaWFsPSQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUEhhcmR3YXJlRGF0YVR5cGUgfCBhd2sgJy9TZXJpYWwvIHtwcmludCAkTkZ9JykKCiMgR2V0IG9yaWdpbmFsIG5hbWUgb2YgY29tcHV0ZXIKb2xkQ29tcHV0ZXJOYW1lPSQoL3Vzci9zYmluL3NjdXRpbCAtLWdldCBDb21wdXRlck5hbWUpCgojIEdlbmVyYXRlIG5ldyBjb21wdXRlciBuYW1lCmNvbXB1dGVyTmFtZT0ke3NlcmlhbH0KCiMgU2V0IG5ldyBjb21wdXRlciBuYW1lIGxvY2FsbHkKL3Vzci9zYmluL3NjdXRpbCAtLXNldCBDb21wdXRlck5hbWUgJHtjb21wdXRlck5hbWV9CgovdXNyL3NiaW4vc2N1dGlsIC0tc2V0IEhvc3ROYW1lICR7Y29tcHV0ZXJOYW1lfQoKL3Vzci9zYmluL3NjdXRpbCAtLXNldCBMb2NhbEhvc3ROYW1lICR7Y29tcHV0ZXJOYW1lfQoKIyBTZXQgdGhlIGNvbXB1dGVyIG5hbWUgaW4gSmFtZiB0byByZWZsZWN0IHdoYXQgaXMgc2V0IGxvY2FsbHkgb24gdGhlIGNvbXB1dGVyCi91c3IvbG9jYWwvYmluL2phbWYgc2V0Q29tcHV0ZXJOYW1lIC1uYW1lICR7Y29tcHV0ZXJOYW1lfQovdXNyL2xvY2FsL2Jpbi9qYW1mIHJlY29uCgplY2hvICJDb21wdXRlciBuYW1lIGhhcyBiZWVuIGNoYW5nZWQgZnJvbSAke29sZENvbXB1dGVyTmFtZX0gdG8gJHtjb21wdXRlck5hbWV9IgoKZXhpdCAw</script_contents_encoded>
+</script>

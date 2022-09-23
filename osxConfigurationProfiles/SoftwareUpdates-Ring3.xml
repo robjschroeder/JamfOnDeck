@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<os_x_configuration_profile>
+  <general>
+    <name>Apple Software Updates - Ring 3</name>
+    <description>Configuration profile used for setting deferral period of available software updates for Ring 3</description>
+    <site>
+      <name>None</name>
+    </site>
+    <category>
+       <name>Software Updates</name>
+    </category>
+    <distribution_method>Install Automatically</distribution_method>
+    <user_removable>false</user_removable>
+    <level>System</level>
+    <uuid>C6B8923F-E06E-46F7-90D4-27F93AB6BF0A</uuid>
+    <redeploy_on_update>Newly Assigned</redeploy_on_update>
+        <payloads>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1"&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;361FBF06-C252-4BE9-92CC-3F9E82EF1205&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;Configuration&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Insight - USA&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;361FBF06-C252-4BE9-92CC-3F9E82EF1205&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Software Updates - Ring 3&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string&gt;Configuration profile used for setting deferral period of available software updates for Ring 2&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadRemovalDisallowed&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadScope&lt;/key&gt;&lt;string&gt;System&lt;/string&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;5E7BF532-C073-4BE3-B235-9507F81F3FC9&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.SoftwareUpdate&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Insight - USA&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;5E7BF532-C073-4BE3-B235-9507F81F3FC9&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Software Update&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string/&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;CatalogURL&lt;/key&gt;&lt;string/&gt;&lt;key&gt;AllowPreReleaseInstallation&lt;/key&gt;&lt;false/&gt;&lt;key&gt;AutomaticallyInstallAppUpdates&lt;/key&gt;&lt;false/&gt;&lt;key&gt;AutomaticallyInstallMacOSUpdates&lt;/key&gt;&lt;false/&gt;&lt;key&gt;AutomaticCheckEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;AutomaticDownload&lt;/key&gt;&lt;false/&gt;&lt;key&gt;ConfigDataInstall&lt;/key&gt;&lt;true/&gt;&lt;key&gt;CriticalUpdateInstall&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;dict&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Custom Settings&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;426BA7C4-E696-44EF-9DBE-B41FA8C8B2CE&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;JAMF Software&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.ManagedClient.preferences&lt;/string&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;426BA7C4-E696-44EF-9DBE-B41FA8C8B2CE&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;dict&gt;&lt;key&gt;com.apple.applicationaccess&lt;/key&gt;&lt;dict&gt;&lt;key&gt;Forced&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;mcx_preference_settings&lt;/key&gt;&lt;dict&gt;&lt;key&gt;enforcedSoftwareUpdateDelay&lt;/key&gt;&lt;integer&gt;21&lt;/integer&gt;&lt;key&gt;enforcedSoftwareUpdateMajorOSDeferredInstallDelay&lt;/key&gt;&lt;integer&gt;21&lt;/integer&gt;&lt;key&gt;enforcedSoftwareUpdateMinorOSDeferredInstallDelay&lt;/key&gt;&lt;integer&gt;21&lt;/integer&gt;&lt;key&gt;enforcedSoftwareUpdateNonOSDeferredInstallDelay&lt;/key&gt;&lt;integer&gt;21&lt;/integer&gt;&lt;key&gt;forceDelayedAppSoftwareUpdates&lt;/key&gt;&lt;true/&gt;&lt;key&gt;forceDelayedMajorSoftwareUpdates&lt;/key&gt;&lt;true/&gt;&lt;key&gt;forceDelayedSoftwareUpdates&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/dict&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;</payloads>
+    </general>
+  <scope>
+    <all_computers>false</all_computers>
+    <all_jss_users>false</all_jss_users>
+    <computers/>
+    <buildings/>
+    <departments/>
+    <computer_groups>
+      <computer_group>
+        <name>Deployment Rings - Ring 3</name>
+      </computer_group>
+    </computer_groups>
+    <jss_users/>
+    <jss_user_groups/>
+    <limitations>
+      <users/>
+      <user_groups/>
+      <network_segments/>
+      <ibeacons/>
+    </limitations>
+    <exclusions>
+      <computers/>
+      <buildings/>
+      <departments/>
+      <computer_groups/>
+      <users/>
+      <user_groups/>
+      <network_segments/>
+      <ibeacons/>
+      <jss_users/>
+      <jss_user_groups/>
+    </exclusions>
+  </scope>
+  <self_service>
+    <self_service_display_name>Apple Software Updates - Ring 3</self_service_display_name>
+    <install_button_text>Install</install_button_text>
+    <self_service_description/>
+    <force_users_to_view_description>false</force_users_to_view_description>
+    <security>
+      <removal_disallowed>Never</removal_disallowed>
+    </security>
+    <self_service_icon/>
+    <feature_on_main_page>false</feature_on_main_page>
+    <self_service_categories/>
+    <notification>false</notification>
+    <notification>Self Service</notification>
+    <notification_subject/>
+    <notification_message/>
+  </self_service>
+</os_x_configuration_profile>

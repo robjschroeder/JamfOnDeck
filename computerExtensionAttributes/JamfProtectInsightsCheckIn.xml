@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>Jamf Protect - Last Insights Check-in</name>
+    <enabled>true</enabled>
+    <description>Displays the date and time of the last Insights check-in for Jamf Protectin GMT timezone</description>
+    <data_type>Date</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/sh
+
+#Jamf Protect Location
+jamfProtectBinaryLocation="/usr/local/bin/protectctl"
+
+if [ -f "$jamfProtectBinaryLocation" ]; then
+	plist=$($jamfProtectBinaryLocation info --plist)
+	xpath="/plist/dict/date[preceding-sibling::key='LastInsightsSync'][1]/text()"
+    rawInsightsSync=$(/bin/echo $plist | /usr/bin/xpath -e "${xpath}" 2&gt;/dev/null)
+    jamfProtectInfoInsightsSync=$(/bin/date -j -f "%Y-%m-%dT%H:%M:%SZ" "$rawInsightsSync" "+%Y-%m-%d %H:%M:%S")
+else
+	jamfProtectInfoInsightsSync="Protect binary not found"
+fi
+
+echo "&lt;result&gt;$jamfProtectInfoInsightsSync&lt;/result&gt;"
+</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

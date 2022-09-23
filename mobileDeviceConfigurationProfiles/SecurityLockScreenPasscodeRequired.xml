@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration_profile>
+    <general>
+        <name>Security - Lock Screen - Require Passcode</name>
+        <description></description>
+        <level>System</level>
+        <site>
+            <name>None</name>
+        </site>
+        <category>
+            <name>Security</name>
+        </category>
+        <uuid>F6D06D5E-4ECF-4361-B33D-BB070F8B3100</uuid>
+        <deployment_method>Install Automatically</deployment_method>
+        <redeploy_on_update>Newly Assigned</redeploy_on_update>
+        <redeploy_days_before_certificate_expires>0</redeploy_days_before_certificate_expires>
+        <payloads>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1"&gt;&lt;dict&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;F6D06D5E-4ECF-4361-B33D-BB070F8B3100&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;Configuration&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;Zero Corp&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;F6D06D5E-4ECF-4361-B33D-BB070F8B3100&lt;/string&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Security - Lock Screen - Require Passcode&lt;/string&gt;&lt;key&gt;PayloadDescription&lt;/key&gt;&lt;string/&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;PayloadEnabled&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadRemovalDisallowed&lt;/key&gt;&lt;true/&gt;&lt;key&gt;PayloadScope&lt;/key&gt;&lt;string&gt;System&lt;/string&gt;&lt;key&gt;PayloadContent&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;PayloadDisplayName&lt;/key&gt;&lt;string&gt;Passcode Payload&lt;/string&gt;&lt;key&gt;PayloadIdentifier&lt;/key&gt;&lt;string&gt;9DC5B7FF-3D10-4A51-867B-0F22315ABEF4&lt;/string&gt;&lt;key&gt;PayloadOrganization&lt;/key&gt;&lt;string&gt;JAMF Software&lt;/string&gt;&lt;key&gt;PayloadType&lt;/key&gt;&lt;string&gt;com.apple.mobiledevice.passwordpolicy&lt;/string&gt;&lt;key&gt;PayloadUUID&lt;/key&gt;&lt;string&gt;9DC5B7FF-3D10-4A51-867B-0F22315ABEF4&lt;/string&gt;&lt;key&gt;PayloadVersion&lt;/key&gt;&lt;integer&gt;1&lt;/integer&gt;&lt;key&gt;forcePIN&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;</payloads>
+    </general>
+    <scope>
+        <all_mobile_devices>true</all_mobile_devices>
+        <all_jss_users>false</all_jss_users>
+    </scope>
+    <self_service>
+        <self_service_description></self_service_description>
+        <security>
+            <removal_disallowed>Never</removal_disallowed>
+        </security>
+        <self_service_icon></self_service_icon>
+        <feature_on_main_page>false</feature_on_main_page>
+        <self_service_categories></self_service_categories>
+    </self_service>
+</configuration_profile>

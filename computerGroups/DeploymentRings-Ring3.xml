@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_group>
+    <name>Deployment Rings - Ring 3</name>
+    <is_smart>true</is_smart>
+    <site>
+        <id>-1</id>
+        <name>None</name>
+    </site>
+    <criteria>
+        <size>2</size>
+        <criterion>
+            <name>Deployment Ring</name>
+            <priority>0</priority>
+            <and_or>and</and_or>
+            <search_type>is</search_type>
+            <value>3</value>
+            <opening_paren>false</opening_paren>
+            <closing_paren>false</closing_paren>
+        </criterion>
+        <criterion>
+            <name>Deployment Ring</name>
+            <priority>1</priority>
+            <and_or>or</and_or>
+            <search_type>is</search_type>
+            <value></value>
+            <opening_paren>false</opening_paren>
+            <closing_paren>false</closing_paren>
+        </criterion>
+    </criteria>
+    <computers>
+        <size>0</size>
+    </computers>
+</computer_group>

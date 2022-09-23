@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>CIS - Audit Count</name>
+    <enabled>true</enabled>
+    <description>CIS Security Reporting - Count Risks</description>
+    <data_type>Integer</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+# Security Reporting - Count Risks
+
+auditfile=/Library/Application\ Support/SecurityScoring/org_audit
+echo "&lt;result&gt;$(cat "$auditfile" | grep "*" | wc -l | tr -d '[:space:]')&lt;/result&gt;"</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

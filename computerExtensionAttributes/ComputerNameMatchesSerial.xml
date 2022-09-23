@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>Computer Name Is Serial Number</name>
+    <enabled>true</enabled>
+    <description>Reports whether or not the computer name matches the serial number</description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+computer_name=$(scutil --get ComputerName)
+serial_number=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
+
+if [ "$computer_name" == "$serial_number" ]; then
+	result="True"
+else
+	result="False"
+fi
+
+echo "&lt;result&gt;$result&lt;/result&gt;"</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

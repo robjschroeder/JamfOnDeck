@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<mac_application>
+    <general>
+        <name>Numbers</name>
+        <category>
+            <name>Productivity</name>
+        </category>
+        <deployment_type>Make Available in Self Service</deployment_type>
+    </general>
+    <scope>
+        <all_computers>true</all_computers>
+        <all_jss_users>false</all_jss_users>
+    </scope>
+    <self_service>
+        <self_service_categories>
+            <category>
+                <name>Business</name>
+                <display_in>true</display_in>
+                <feature_in>false</feature_in>
+            </category>
+            <category>
+                <name>Productivity</name>
+                <display_in>true</display_in>
+                <feature_in>false</feature_in>
+            </category>
+        </self_service_categories>
+    </self_service>
+    <vpp>
+        <assign_vpp_device_based_licenses>true</assign_vpp_device_based_licenses>
+        <vpp_admin_account_id>1</vpp_admin_account_id>
+    </vpp>
+</mac_application>

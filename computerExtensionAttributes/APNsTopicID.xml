@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>APNs Topic ID</name>
+    <enabled>true</enabled>
+    <description>Returns the topic id of the APNs certificate presented on the computer. </description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/bash
+
+# Reports the Topic ID (serial of the APNS cert) being used on the MDM profile
+#
+# Updated: 3.26.2022 @ Robjschroeder
+#
+
+topicID=$(/usr/sbin/system_profiler SPConfigurationProfileDataType | awk '/Topic/{ print $NF }' | sed 's/[";]//g')
+
+if [ $topicID == "" ]; then
+	echo "&lt;result&gt;No Push Cert&lt;/result&gt;"
+else
+	echo "&lt;result&gt;${topicID}&lt;/result&gt;"
+fi
+
+exit 0</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

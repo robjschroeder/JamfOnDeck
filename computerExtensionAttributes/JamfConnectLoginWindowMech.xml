@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<computer_extension_attribute>
+    <name>Jamf Connect - Login Window Mechanism</name>
+    <enabled>true</enabled>
+    <description>Returns whether the native macOS login window or Jamf Connect login window is enabled. </description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>script</type>
+        <platform>Mac</platform>
+        <script>#!/bin/sh
+
+# Script will report whether the computer is
+# using the macOS login window or Jamf Connect
+# login window
+
+# Updated: 3.01.2022 @robjschroeder
+
+loginwindow_check=$(security authorizationdb read system.login.console | grep 'loginwindow:login' 2&gt;&amp;1 &gt; /dev/null; echo $?)
+
+if [ $loginwindow_check == 0 ]; then
+    echo "&lt;result&gt;OS LoginWindow&lt;/result&gt;"
+else
+    echo "&lt;result&gt;JC LoginWindow&lt;/result&gt;"
+fi</script>
+    </input_type>
+    <inventory_display>Extension Attributes</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--macOS Computer Extension Attribute used for Deployment Rings
+Pop-up extension attribute can be used to choose "1,2,3"
+Created: 6.3.2022 @robjschroeder
+-->
+<computer_extension_attribute>
+    <name>Deployment Ring</name>
+    <enabled>true</enabled>
+    <description>Used to move computers into different software update rings. </description>
+    <data_type>String</data_type>
+    <input_type>
+        <type>Pop-up Menu</type>
+        <popup_choices>
+            <choice>1</choice>
+            <choice>2</choice>
+            <choice>3</choice>
+        </popup_choices>
+    </input_type>
+    <inventory_display>General</inventory_display>
+    <recon_display>Extension Attributes</recon_display>
+</computer_extension_attribute>

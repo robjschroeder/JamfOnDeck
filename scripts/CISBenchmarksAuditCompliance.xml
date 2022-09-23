@@ -1,0 +1,1519 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<script>
+    <name>2_Security_Audit_Compliance</name>
+    <category>Security</category>
+    <filename>2_Security_Audit_Compliance</filename>
+    <info>Audits computers against organization priorities.</info>
+    <notes>Reads from plist at /Library/Application Support/SecurityScoring/org_security_score.plist by default.
+For "true" items, runs query for current computer/user compliance.
+Non-compliant items are logged to /Library/Application Support/SecurityScoring/org_audit
+Variables</notes>
+    <priority>After</priority>
+    <parameters></parameters>
+    <os_requirements></os_requirements>
+    <script_contents>#!/bin/bash
+
+####################################################################################################
+#
+# Copyright (c) 2017, Jamf, LLC.  All rights reserved.
+#
+#       Redistribution and use in source and binary forms, with or without
+#       modification, are permitted provided that the following conditions are met:
+#               * Redistributions of source code must retain the above copyright
+#                 notice, this list of conditions and the following disclaimer.
+#               * Redistributions in binary form must reproduce the above copyright
+#                 notice, this list of conditions and the following disclaimer in the
+#                 documentation and/or other materials provided with the distribution.
+#               * Neither the name of the JAMF Software, LLC nor the
+#                 names of its contributors may be used to endorse or promote products
+#                 derived from this software without specific prior written permission.
+#
+#       THIS SOFTWARE IS PROVIDED BY JAMF SOFTWARE, LLC "AS IS" AND ANY
+#       EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+#       WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+#       DISCLAIMED. IN NO EVENT SHALL JAMF SOFTWARE, LLC BE LIABLE FOR ANY
+#       DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+#       (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+#       LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+#       ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+#       (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+#       SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+####################################################################################################
+# written by Katie English, Jamf October 2016
+# updated for 10.12 CIS benchmarks by Katie English, Jamf February 2017
+# updated to use configuration profiles by Apple Professional Services, January 2018
+# updated to use REST API to update EAs instead of recon
+# github.com/jamfprofessionalservices
+# updated for 10.13 CIS benchmarks by Erin McDonald, Jamf Jan 2019
+# updated for 10.15 CIS benchmarks by Erin McDonald, Jamf 2020
+
+# USAGE
+# Reads from plist at /Library/Application Support/SecurityScoring/org_security_score.plist by default.
+# For "true" items, runs query for current computer/user compliance.
+# Non-compliant items are logged to /Library/Application Support/SecurityScoring/org_audit
+# Variables
+
+Defaults="/usr/bin/defaults"
+
+
+# DO NOT EDIT BELOW THIS LINE
+####################################################################################################
+
+plistlocation="/Library/Application Support/SecurityScoring/org_security_score.plist"
+auditfilelocation="/Library/Application Support/SecurityScoring/org_audit"
+currentUser="$(python -c 'from SystemConfiguration import SCDynamicStoreCopyConsoleUser; import sys; username = (SCDynamicStoreCopyConsoleUser(None, None, None) or [None])[0]; username = [username,""][username in [u"loginwindow", None, u""]]; sys.stdout.write(username + "\n");')"
+hardwareUUID="$(/usr/sbin/system_profiler SPHardwareDataType | grep "Hardware UUID" | awk -F ": " '{print $2}' | xargs)"
+
+logFile="/Library/Application Support/SecurityScoring/remediation.log"
+
+osVersion="$(sw_vers -productversion)"
+if [ "$osVersion" &lt; 11 ]; then
+	echo "This script does not support Catalina. Please use https://github.com/jamf/CIS-for-macOS-Catalina-CP instead"
+	exit 0
+fi
+
+
+if [[ $(tail -n 1 "$logFile") = *"Remediation complete" ]]; then
+	echo "Append to existing logFile"
+ 	echo "$(date -u)" "Beginning Audit" &gt;&gt; "$logFile"
+else
+ 	echo "Create new logFile"
+ 	echo "$(date -u)" "Beginning Audit" &gt; "$logFile"	
+fi
+
+if [[ ! -e $plistlocation ]]; then
+	echo "No scoring file present"
+	exit 0
+fi
+
+# Cleanup audit file to start fresh
+[ -f "$auditfilelocation" ] &amp;&amp; rm "$auditfilelocation"
+touch "$auditfilelocation"
+
+
+# 1.1 Verify all Apple provided software is current
+# Verify organizational score
+Audit1_1="$($Defaults read "$plistlocation" OrgScore1_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_1" = "1" ]; then
+	countAvailableSUS="$(softwareupdate -l | grep "*" | wc -l | tr -d ' ')"
+	# If client fails, then note category in audit file
+	if [ "$countAvailableSUS" = "0" ]; then
+		echo "$(date -u)" "1.1 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_1 -bool false; else
+		echo "* 1.1 Verify all Apple provided software is current" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "1.1 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 1.2 Enable Auto Update
+# Configuration Profile - Custom payload &gt; com.apple.SoftwareUpdate.plist &gt; AutomaticCheckEnabled=true, AutomaticDownload=true
+# Verify organizational score
+Audit1_2="$($Defaults read "$plistlocation" OrgScore1_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_2" = "1" ]; then
+	# Check to see if the preference and key exist. If not, write to audit log. Presuming: Unset = not secure state.
+	CP_automaticUpdates="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'AutomaticCheckEnabled = 1')"
+	if [[ "$CP_automaticUpdates" -gt "0" ]]; then
+		echo "$(date -u)" "1.2 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_2 -bool false; else
+		automaticUpdates="$($Defaults read /Library/Preferences/com.apple.SoftwareUpdate | /usr/bin/grep -c 'AutomaticCheckEnabled = 1')"
+		if [[ "$automaticUpdates" -gt "0" ]]; then
+			echo "$(date -u)" "1.2 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore1_2 -bool false; else
+			echo "* 1.2 Enable Auto Update" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "1.2 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 1.3 Enable Download new updates when available
+# Verify organizational score
+Audit1_3="$($Defaults read "$plistlocation" OrgScore1_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_3" = "1" ]; then
+	# Check to see if the preference and key exist. If not, write to audit log. Presuming: Unset = not secure state.
+		CP_automaticAppUpdates="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'AutomaticDownload = 1')"
+		if [[ "$CP_automaticAppUpdates" -gt "0" ]]; then
+			echo "$(date -u)" "1.3 passed cp" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore1_3 -bool false; else
+	automaticAppUpdates="$($Defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload)"
+	# If client fails, then note category in audit file
+	if [ "$automaticAppUpdates" = "1" ]; then
+		echo "$(date -u)" "1.3 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_3 -bool false; else
+		echo "* 1.3 Enable app update installs" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "1.3 fix" | tee -a "$logFile"
+	fi
+	fi
+fi
+
+# 1.4 Enable app updates 
+# Configuration Profile - Software Update - Automatically install App Store app updates
+# Verify organizational score
+Audit1_4="$($Defaults read "$plistlocation" OrgScore1_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_4" = "1" ]; then
+	# Check to see if the preference and key exist. If not, write to audit log. Presuming: Unset = not secure state.
+		CP_automaticAppUpdates="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'AutomaticInstallAppUpdates = 1')"
+		if [[ "$CP_automaticAppUpdates" -gt "0" ]]; then
+			echo "$(date -u)" "1.4 passed cp" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore1_4 -bool false; else
+		automaticAppUpdates="$($Defaults read /Library/Preferences/com.apple.commerce AutoUpdate)"
+	# If client fails, then note category in audit file
+	if [ "$automaticAppUpdates" = "1" ]; then
+		echo "$(date -u)" "1.4 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_4 -bool false; else
+		echo "* 1.4 Enable app update installs" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "1.4 fix" | tee -a "$logFile"
+	fi
+	fi
+fi
+
+
+# 1.5 Enable system data files and security update installs 
+# Configuration Profile - Software Updates - Install security updates automatically and Install xProtect, MRT &amp; Gatekeeper updates automatically (Jamf Pro - Automatically install configuration data and Automatcially install system data files and security updates)
+# Verify organizational score
+Audit1_5="$($Defaults read "$plistlocation" OrgScore1_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_5" = "1" ]; then
+	# Check to see if the preference and key exist. If not, write to audit log. Presuming: Unset = not secure state.
+	CP_criticalUpdates="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'ConfigDataInstall = 1')"
+	if [[ "$CP_criticalUpdates" -gt "0" ]]; then
+		echo "$(date -u)" "1.5 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_5 -bool false; else
+		criticalUpdates="$($Defaults read /Library/Preferences/com.apple.SoftwareUpdate | /usr/bin/grep -c 'ConfigDataInstall = 1')"
+		if [[ "$criticalUpdates" -gt "0" ]]; then
+			echo "$(date -u)" "1.5 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore1_5 -bool false; else
+			echo "* 1.5 Enable system data files and security update installs" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "1.5 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 1.6 Enable OS X update installs 
+# Configuration Profile - Software Updates - Automatically install macOS updates
+# Verify organizational score
+Audit1_6="$($Defaults read "$plistlocation" OrgScore1_6)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit1_6" = "1" ]; then
+	updateRestart="$($Defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates)"
+	# If client fails, then note category in audit file
+	if [ "$updateRestart" = "1" ]; then
+		echo "$(date -u)" "1.6 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore1_6 -bool false; else
+		echo "* 1.6 Enable OS X update installs" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "1.6 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.1.1 Turn off Bluetooth, if no paired devices exist
+# Verify organizational score
+Audit2_1_1="$($Defaults read "$plistlocation" OrgScore2_1_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_1_1" = "1" ]; then
+	btPowerState="$($Defaults read /Library/Preferences/com.apple.Bluetooth ControllerPowerState)"
+	# If client fails, then note category in audit file
+	if [ "$btPowerState" = "0" ]; then
+		echo "$(date -u)" "2.1.1 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_1_1 -bool false; else
+		connectable="$(system_profiler SPBluetoothDataType 2&gt;&amp;1| grep Connectable | awk '{print $2}' | head -1)"
+		if [[ "$connectable" != "Yes" ]]; then
+			echo "$(date -u)" "2.1.1 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_1_1 -bool false; else
+			echo "* 2.1.1 Turn off Bluetooth, if no paired devices exist" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.1.1 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.1.2 Show Bluetooth status in menu bar
+# Verify organizational score
+Audit2_1_2="$($Defaults read "$plistlocation" OrgScore2_1_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_1_2" = "1" ]; then
+    btMenuBar="$(python -c 'from CoreFoundation import CFPreferencesCopyAppValue; print CFPreferencesCopyAppValue("Bluetooth", "com.apple.controlcenter.plist")')"
+	# If client fails, then note category in audit file
+	if [ "$btMenuBar" = "18" ]; then
+		echo "* 2.1.2 Show Bluetooth status in menu bar" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.1.2 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "2.1.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_1_2 -bool false
+	fi
+fi
+
+### 2.2.1 Enable "Set time and date automatically" (Not Scored)
+# Verify organizational score
+Audit2_2_1="$($Defaults read "$plistlocation" OrgScore2_2_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_2_1" = "1" ]; then
+	SetTimeAndDateAutomatically="$(systemsetup -getusingnetworktime | awk '{print $3}')"
+	# If client fails, then note category in audit file
+	if [ "$SetTimeAndDateAutomatically" = "On" ]; then
+	 	echo "$(date -u)" "2.2.1 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_2_1 -bool false; else
+		echo "* 2.2.1 Enable Set time and date automatically" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.2.1 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.2.2 Ensure time set is within appropriate limits
+# Not audited - only enforced if identified as priority
+# Verify organizational score
+Audit2_2_2="$($Defaults read "$plistlocation" OrgScore2_2_2)"
+# If organizational score is 1 or true, check status of client
+# if [ "$Audit2_2_2" = "1" ]; then
+# sync time 
+# fi
+
+# 2.3.1 Set an inactivity interval of 20 minutes or less for the screen saver 
+# Configuration Profile - LoginWindow payload &gt; Options &gt; Start screen saver after: 20 Minutes of Inactivity
+# Verify organizational score
+Audit2_3_1="$($Defaults read "$plistlocation" OrgScore2_3_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_3_1" = "1" ]; then
+	CP_screenSaverTime="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep idleTime | awk '{print $3-0}')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_screenSaverTime" -le "1200" ]] &amp;&amp; [[ "$CP_screenSaverTime" != "" ]]; then
+		echo "$(date -u)" "2.3.1 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_3_1 -bool false; else
+		screenSaverTime="$($Defaults read /Users/"$currentUser"/Library/Preferences/ByHost/com.apple.screensaver."$hardwareUUID".plist idleTime)"
+		if [[ "$screenSaverTime" -le "1200" ]] &amp;&amp; [[ "$screenSaverTime" != "" ]]; then
+			echo "$(date -u)" "2.3.1 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_3_1 -bool false; else
+			echo "* 2.3.1 Set an inactivity interval of 20 minutes or less for the screen saver" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.3.1 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.3.2 Secure screen saver corners 
+# Configuration Profile - Custom payload &gt; com.apple.dock &gt; wvous-tl-corner=0, wvous-br-corner=5, wvous-bl-corner=0, wvous-tr-corner=0
+# Verify organizational score
+Audit2_3_2="$($Defaults read "$plistlocation" OrgScore2_3_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_3_2" = "1" ]; then
+	CP_corner="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -E '(\"wvous-bl-corner\" =|\"wvous-tl-corner\" =|\"wvous-tr-corner\" =|\"wvous-br-corner\" =)')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_corner" != *"6"* ]] &amp;&amp; [[ "$CP_corner" != "" ]]; then
+		echo "$(date -u)" "2.3.2 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_3_2 -bool false; else
+		bl_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-bl-corner)"
+		tl_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-tl-corner)"
+		tr_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-tr-corner)"
+		br_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-br-corner)"
+		if [[ "$bl_corner" != "6" ]] &amp;&amp; [[ "$tl_corner" != "6" ]] &amp;&amp; [[ "$tr_corner" != "6" ]] &amp;&amp; [[ "$br_corner" != "6" ]]; then
+			echo "$(date -u)" "2.3.2 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_3_2 -bool false; else
+			echo "* 2.3.2 Secure screen saver corners" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.3.2 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.3.3 Familiarize users with screen lock tools or corner to Start Screen Saver 
+# Configuration Profile - Custom payload &gt; com.apple.dock &gt; wvous-tl-corner=0, wvous-br-corner=5, wvous-bl-corner=0, wvous-tr-corner=0
+# Verify organizational score
+Audit2_3_3="$($Defaults read "$plistlocation" OrgScore2_3_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_3_3" = "1" ]; then
+	# If client fails, then note category in audit file
+	CP_corner="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -E '(\"wvous-bl-corner\" =|\"wvous-tl-corner\" =|\"wvous-tr-corner\" =|\"wvous-br-corner\" =)')"
+	if [[ "$CP_corner" = *"5"* ]] ; then
+		echo "$(date -u)" "2.3.4 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_3_3 -bool false; else
+		bl_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-bl-corner)"
+		tl_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-tl-corner)"
+		tr_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-tr-corner)"
+		br_corner="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.dock wvous-br-corner)"
+		if [ "$bl_corner" = "5" ] || [ "$tl_corner" = "5" ] || [ "$tr_corner" = "5" ] || [ "$br_corner" = "5" ]; then
+			echo "$(date -u)" "2.3.3 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_3_3 -bool false; else
+			echo "* 2.3.3 Familiarize users with screen lock tools or corner to Start Screen Saver" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.3.3 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+
+# 2.4.1 Disable Remote Apple Events 
+# Verify organizational score
+Audit2_4_1="$($Defaults read "$plistlocation" OrgScore2_4_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_1" = "1" ]; then
+	remoteAppleEvents="$(systemsetup -getremoteappleevents | awk '{print $4}')"
+	# If client fails, then note category in audit file
+	if [ "$remoteAppleEvents" = "Off" ]; then
+	 	echo "$(date -u)" "2.4.1 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_1 -bool false; else
+		echo "* 2.4.1 Disable Remote Apple Events" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.1 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.2 Disable Internet Sharing 
+# Verify organizational score
+Audit2_4_2="$($Defaults read "$plistlocation" OrgScore2_4_2)"
+# If organizational score is 1 or true, check status of client
+# If client fails, then note category in audit file
+if [ "$Audit2_4_2" = "1" ]; then
+	if [ -e /Library/Preferences/SystemConfiguration/com.apple.nat.plist ]; then
+		natAirport="$(/usr/libexec/PlistBuddy -c "print :NAT:AirPort:Enabled" /Library/Preferences/SystemConfiguration/com.apple.nat.plist)"
+		natEnabled="$(/usr/libexec/PlistBuddy -c "print :NAT:Enabled" /Library/Preferences/SystemConfiguration/com.apple.nat.plist)"
+		natPrimary="$(/usr/libexec/PlistBuddy -c "print :NAT:PrimaryInterface:Enabled" /Library/Preferences/SystemConfiguration/com.apple.nat.plist)"
+        forwarding="$(sysctl net.inet.ip.forwarding | awk '{ print $NF }')"
+		if [ "$natAirport" = "true" ] || [ "$natEnabled" = "true" ] || [ "$natPrimary" = "true" ] || [ "$forwarding" = "1" ]; then
+			echo "* 2.4.2 Disable Internet Sharing"  &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.4.2 fix" | tee -a "$logFile"
+        else
+			echo "$(date -u)" "2.4.2 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_4_2 -bool false
+		fi
+    else
+		echo "$(date -u)" "2.4.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_4_2 -bool false
+	fi
+fi
+
+# 2.4.3 Disable Screen Sharing 
+# Verify organizational score
+Audit2_4_3="$($Defaults read "$plistlocation" OrgScore2_4_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_3" = "1" ]; then
+	# If client fails, then note category in audit file
+	screenSharing="$(launchctl list | egrep -c screensharing)"
+	if [ "$screenSharing" -gt 0 ]; then
+		echo "* 2.4.3 Disable Screen Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.3 fix" | tee -a "$logFile"; else
+	 	echo "$(date -u)" "2.4.3 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_3 -bool false
+	fi
+fi
+
+# 2.4.4 Disable Printer Sharing 
+# Verify organizational score
+Audit2_4_4="$($Defaults read "$plistlocation" OrgScore2_4_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_4" = "1" ]; then
+	# If client fails, then note category in audit file
+	printerSharing="$(/usr/sbin/cupsctl | grep -c "share_printers=0")"
+	if [ "$printerSharing" != "0" ]; then
+	 	echo "$(date -u)" "2.4.4 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_4 -bool false; else
+		echo "* 2.4.4 Disable Printer Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.4 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.5 Disable Remote Login 
+# Verify organizational score
+Audit2_4_5="$($Defaults read "$plistlocation" OrgScore2_4_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_5" = "1" ]; then
+	remoteLogin="$(/usr/sbin/systemsetup -getremotelogin | awk '{print $3}')"
+	# If client fails, then note category in audit file
+	if [ "$remoteLogin" = "Off" ]; then
+	 	echo "$(date -u)" "2.4.5 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_5 -bool false; else
+		echo "* 2.4.5 Disable Remote Login" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.5 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.6 Disable DVD or CD Sharing 
+# Verify organizational score
+Audit2_4_6="$($Defaults read "$plistlocation" OrgScore2_4_6)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_6" = "1" ]; then
+	discSharing="$(launchctl list | egrep ODSAgent)"
+	# If client fails, then note category in audit file
+	if [ "$discSharing" = "" ]; then
+	 	echo "$(date -u)" "2.4.6 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_6 -bool false; else
+		echo "* 2.4.6 Disable DVD or CD Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.6 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.7 Disable Bluetooth Sharing
+# Verify organizational score
+Audit2_4_7="$($Defaults read "$plistlocation" OrgScore2_4_7)"
+# If organizational score is 1 or true, check status of client and user
+if [ "$Audit2_4_7" = "1" ]; then
+	btSharing="$(/usr/libexec/PlistBuddy -c "print :PrefKeyServicesEnabled"  /Users/"$currentUser"/Library/Preferences/ByHost/com.apple.Bluetooth."$hardwareUUID".plist)"
+	# If client fails, then note category in audit file
+	if [ "$btSharing" = "true" ]; then
+		echo "* 2.4.7 Disable Bluetooth Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.7 fix" | tee -a "$logFile"; else
+	 	echo "$(date -u)" "2.4.7 passed" | tee -a "$logFile"
+	 	$Defaults write "$plistlocation" OrgScore2_4_7 -bool false
+	fi
+fi
+
+# 2.4.8 Disable File Sharing
+# Verify organizational score
+Audit2_4_8="$($Defaults read "$plistlocation" OrgScore2_4_8)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_8" = "1" ]; then
+	afpEnabled="$(launchctl list | egrep AppleFileServer)"
+	smbEnabled="$(launchctl list | egrep smbd)"
+	# If client fails, then note category in audit file
+	if [ "$afpEnabled" = "" ] &amp;&amp; [ "$smbEnabled" = "" ]; then
+ 		echo "$(date -u)" "2.4.8 passed" | tee -a "$logFile"
+ 		$Defaults write "$plistlocation" OrgScore2_4_8 -bool false; else
+		echo "* 2.4.8 Disable File Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.8 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.9 Disable Remote Management
+# Verify organizational score
+Audit2_4_9="$($Defaults read "$plistlocation" OrgScore2_4_9)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_9" = "1" ]; then
+	remoteManagement="$(ps -ef | egrep ARDAgent | grep -c "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/MacOS/ARDAgent")"
+	# If client fails, then note category in audit file
+	if [ "$remoteManagement" = "1" ]; then
+ 		echo "$(date -u)" "2.4.9 passed" | tee -a "$logFile"
+ 		$Defaults write "$plistlocation" OrgScore2_4_9 -bool false; else
+		echo "* 2.4.9 Disable Remote Management" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.9 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.10 Disable Content Caching
+# Verify organizational score
+Audit2_4_10="$($Defaults read "$plistlocation" OrgScore2_4_10)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_10" = "1" ]; then
+	contentCacheStatus="$(/usr/bin/AssetCacheManagerUtil status 2&gt;&amp;1 | grep -c "Activated: false")"
+	# If client fails, then note category in audit file
+	if [ "$contentCacheStatus" == 1 ]; then
+ 		echo "$(date -u)" "2.4.10 passed" | tee -a "$logFile"
+ 		$Defaults write "$plistlocation" OrgScore2_4_10 -bool false; else
+		echo "* 2.4.10 Disable Disable Content Caching" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.10 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.4.11 Disable Media Sharing
+# Verify organizational score
+Audit2_4_11="$($Defaults read "$plistlocation" OrgScore2_4_11)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_4_11" = "1" ]; then
+	mediaSharingStatusHome=$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.amp.mediasharingd.plist home-sharing-enabled)
+	mediaSharingStatusPublic=$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.amp.mediasharingd.plist public-sharing-enabled)
+	# If client fails, then note category in audit file
+	if [ "$mediaSharingStatusHome" == 0 ] &amp;&amp; [ "$mediaSharingStatusPublic" == 0 ]; then
+ 		echo "$(date -u)" "2.4.11 passed" | tee -a "$logFile"
+ 		$Defaults write "$plistlocation" OrgScore2_4_11 -bool false
+		elif [ "$mediaSharingStatusHome" = "" ] &amp;&amp; [ "$mediaSharingStatusPublic" = "" ]; then
+			echo "$(date -u)" "2.4.11 passed" | tee -a "$logFile"
+			 $Defaults write "$plistlocation" OrgScore2_4_11 -bool false; else
+		echo "* 2.4.11 Disable Disable Media Sharing" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.4.11 fix" | tee -a "$logFile"
+	fi
+fi
+
+
+# 2.5.1.1 Enable FileVault 
+# Verify organizational score
+# Audit only.  Does not remediate
+Audit2_5_1_1="$($Defaults read "$plistlocation" OrgScore2_5_1_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_1_1" = "1" ]; then
+	filevaultEnabled="$(fdesetup status | awk '{print $3}')"
+	# If client fails, then note category in audit file
+	if [ "$filevaultEnabled" = "Off." ]; then
+		echo "* 2.5.1.1 Enable FileVault" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.5.1.1 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "2.5.1.1 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_1_1 -bool false	
+	fi
+fi
+
+# 2.5.1.2 Ensure all user storage APFS Volumes are encrypted
+# Verify organizational score
+# Audit only.  Does not remediate
+Audit2_5_1_2="$($Defaults read "$plistlocation" OrgScore2_5_1_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_1_2" = "1" ]; then
+	apfsyes="$(diskutil ap list)"
+	if [ "$apfsyes" != "No APFS Containers found" ]; then
+		DUINFO=$(diskutil info /)
+		LV_UUID=$(echo "$DUINFO" | awk '/\/ Partition UUID/ {print $5;exit}')
+					# Get the APFS Container ID for the boot drive's APFS volume.
+					CONTAINER_ID=$(echo "$DUINFO" | awk '/Part of Whole/ {print $4;exit}')
+					APFSINFO=$(diskutil ap list "$CONTAINER_ID")
+					APVOLINFO=$(echo "$APFSINFO" | grep -A7 "$LV_UUID")
+					ENCRYPTION=$(echo "$APVOLINFO" | awk '/FileVault/ {print $3;exit}')
+					if [ "$ENCRYPTION" != "Yes" ]; then
+						echo "* 2.5.1.2 Ensure all user storage APFS Volumes are encrypted" &gt;&gt; "$auditfilelocation"
+						echo "$(date -u)" "2.5.1.2 fix" | tee -a "$logFile"; else 
+						echo "$(date -u)" "2.5.1.2 passed" | tee -a "$logFile"
+						$Defaults write "$plistlocation" OrgScore2_5_1_2 -bool false	
+						fi
+					else 
+					echo "$(date -u)" "2.5.1.2 not applicable, CoreStorage storage enabled" | tee -a "$logFile"
+					fi
+				fi
+
+	
+
+# 2.5.1.3 Ensure all user storage CoreStorage Volumes are encrypted
+# Verify organizational score
+# Audit only.  Does not remediate
+Audit2_5_1_3="$($Defaults read "$plistlocation" OrgScore2_5_1_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_1_3" = "1" ]; then
+	apfsyes="$(diskutil ap list)"
+	if [ "$apfsyes" == "No APFS Containers found" ]; then
+		# get Logical Volume Family
+		LFV="$(diskutil cs list | grep "Logical Volume Family" | awk '/Logical Volume Family/ {print $5}')"
+		# Check encryption status is complete
+		EncryptStatus="$( diskutil cs "$LFV" | awk '/Conversion Status/ {print $3}')"
+		if [ "$EncryptStatus" != "Complete" ]; then
+		echo "* 2.5.1.3 Ensure all user CoreStorage volumes encrypted" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.5.1.3 fix" | tee -a "$logfile"; else 
+		echo "$(date -u)" "2.5.1.3 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_1_3 -bool false	
+		fi
+	else 
+	echo "$(date -u)" "2.5.1.3 not applicable, APFS storage enabled" | tee -a "$logFile"
+	fi
+fi
+	
+
+# 2.5.2.1 Enable Gatekeeper 
+# Configuration Profile - Security and Privacy payload &gt; General &gt; Gatekeeper &gt; Mac App Store and identified developers (selected)
+# Verify organizational score
+Audit2_5_2_1="$($Defaults read "$plistlocation" OrgScore2_5_2_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_2_1" = "1" ]; then
+	CP_gatekeeperEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'EnableAssessment = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_gatekeeperEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "2.5.2.1 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_2_1 -bool false; else
+		gatekeeperEnabled="$(spctl --status | grep -c "assessments enabled")"
+		if [ "$gatekeeperEnabled" = "1" ]; then
+			echo "$(date -u)" "2.5.2.1 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_5_2_1 -bool false; else
+			echo "* 2.5.2.1 Enable Gatekeeper" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.5.2.1 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.5.2.2 Enable Firewall 
+# Configuration Profile - Security and Privacy payload &gt; Firewall &gt; Enable Firewall (checked)
+# Verify organizational score
+Audit2_5_2_2="$($Defaults read "$plistlocation" OrgScore2_5_2_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_2_2" = "1" ]; then
+	CP_firewallEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'EnableFirewall = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_firewallEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "2.5.2.2 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_2_2 -bool false; else
+		firewallEnabled="$($Defaults read /Library/Preferences/com.apple.alf globalstate)"
+		if [ "$firewallEnabled" = "0" ]; then
+			echo "* 2.5.2.2 Enable Firewall" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.5.2.2 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "2.5.2.2 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_5_2_2 -bool false
+		fi
+	fi
+fi
+
+# 2.5.2.3 Enable Firewall Stealth Mode 
+# Configuration Profile - Security and Privacy payload &gt; Firewall &gt; Enable stealth mode (checked)
+# Verify organizational score
+Audit2_5_2_3="$($Defaults read "$plistlocation" OrgScore2_5_2_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_2_3" = "1" ]; then
+	CP_stealthEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'EnableStealthMode = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_stealthEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "2.5.2.3 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_2_3 -bool false; else
+		stealthEnabled="$(/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode | awk '{print $3}')"
+		if [ "$stealthEnabled" = "enabled" ]; then
+			echo "$(date -u)" "2.5.2.3 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_5_2_3 -bool false; else
+			echo "* 2.5.2.3 Enable Firewall Stealth Mode" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.5.2.3 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.5.3 Enable Location Services
+# Verify organizational score
+Audit2_5_3="$($Defaults read "$plistlocation" OrgScore2_5_3)"
+# If organizational score is 1 or true, check status of client
+# If client fails, then remediate
+if [ "$Audit2_5_3" = "1" ]; then
+       auditdEnabled=$(launchctl print-disabled system | grep -c '"com.apple.locationd" =&gt; true')
+       if [ "$auditdEnabled" = "0" ]; then
+           echo "$(date -u)" "2.5.3 passed" | tee -a "$logFile"
+           $Defaults write "$plistlocation" OrgScore2_5_3 -bool false
+       else
+           echo "* 2.5.3 Enable Location Services" &gt;&gt; "$auditfilelocation"
+           echo "$(date -u)" "2.5.3 fix" | tee -a "$logFile"
+       fi
+fi
+
+# 2.5.5 Disable sending diagnostic and usage data to Apple
+# Verify organizational score
+Audit2_5_5="$($Defaults read "$plistlocation" OrgScore2_5_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_5" = "1" ]; then
+CP_disableDiagnostic="$(python -c 'from CoreFoundation import CFPreferencesCopyAppValue; print CFPreferencesCopyAppValue("AutoSubmit", "com.apple.SubmitDiagInfo")')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_disableDiagnostic" == "False" ]] ; then
+		echo "$(date -u)" "2.5.5 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_5 -bool false; else
+	AppleDiagn=$($Defaults read /Library/Application\ Support/CrashReporter/DiagnosticMessagesHistory.plist AutoSubmit)
+	if [ "$AppleDiagn" == 1 ]; then 
+		/bin/echo "* 2.5.5 Disable sending diagnostic and usage data to Apple" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.5.5 fix Disable sending diagnostic and usage data to Apple" | tee -a "$logFile"; else
+		echo "$(date -u)" "2.5.5 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_5 -bool false
+		fi
+	fi
+fi
+
+# 2.5.6 Limit Ad tracking and personalized Ads
+# Verify organizational score
+Audit2_5_6="$($Defaults read "$plistlocation" OrgScore2_5_6)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_5_6" = "1" ]; then
+	if [ "$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.AdLib.plist allowApplePersonalizedAdvertising)" = "0" ]; then
+		echo "$(date -u)" "2.5.6 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_5_6 -bool false
+	else
+		echo "* 2.5.6 Review Limit Ad tracking and personalized Ads" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.5.6 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.6.1 iCloud configuration (Check for iCloud accounts) (Not Scored)
+# Verify organizational score
+Audit2_6_1="$($Defaults read "$plistlocation" OrgScore2_6_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_6_1" = "1" ]; then
+	over500=$( /usr/bin/dscl . list /Users UniqueID | /usr/bin/awk '$2 &gt; 500 { print $1 }' )
+	for EachUser in $over500 ;
+	do
+		UserHomeDirectory=$(/usr/bin/dscl . -read /Users/"$EachUser" NFSHomeDirectory | /usr/bin/awk '{print $2}')
+		CheckForiCloudAccount="$($Defaults read "$UserHomeDirectory/Library/Preferences/MobileMeAccounts" Accounts | /usr/bin/grep -c 'AccountDescription = iCloud')"
+		# If client fails, then note category in audit file
+		if [[ "$CheckForiCloudAccount" -gt "0" ]] ; then
+			/bin/echo "* 2.6.1 User has an iCloud account configured" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.6.1 fix $EachUser iCloud account" | tee -a "$logFile"; else
+			echo "$(date -u)" "2.6.1 passed $EachUser" #| tee -a "$logFile"
+		fi
+	done
+fi
+
+# 2.6.2 Disable iCloud keychain (Not Scored) - 
+# Configuration Profile - Restrictions payload &gt; Functionality &gt; Allow iCloud Keychain (unchecked)
+# Verify organizational score
+Audit2_6_2="$($Defaults read "$plistlocation" OrgScore2_6_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_6_2" = "1" ]; then
+	CP_iCloudKeychain="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'allowCloudKeychainSync = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_iCloudKeychain" -gt "0" ]] ; then
+		echo "$(date -u)" "2.6.2 passed CP" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_6_2 -bool false; else
+		echo "* 2.6.2 Disable iCloud Keychain with configuration profile" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.6.2 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.6.3 Disable iCloud Drive (Not Scored)
+# Configuration Profile - Restrictions payload &gt; Functionality &gt; Allow iCloud Drive (unchecked)
+# Verify organizational score
+Audit2_6_3="$($Defaults read "$plistlocation" OrgScore2_6_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_6_3" = "1" ]; then
+	CP_iCloudDrive="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'allowCloudDocumentSync = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_iCloudDrive" -gt "0" ]] ; then
+		echo "$(date -u)" "2.6.3 passed CP" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_6_3 -bool false; else
+		echo "* 2.6.3 Disable iCloud Drive with configuration profile" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.6.3 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.6.4 iCloud Drive Document sync
+# Configuration Profile - Restrictions payload - &gt; Functionality &gt; Allow iCloud Desktop &amp; Documents (unchecked)
+# Verify organizational score
+Audit2_6_4="$($Defaults read "$plistlocation" OrgScore2_6_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_6_4" = "1" ]; then
+	# If client fails, then note category in audit file
+	CP_icloudDriveDocSync="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'allowCloudDesktopAndDocuments = 0')"
+	if [[ "$CP_icloudDriveDocSync" -gt "0" ]] ; then
+		echo "$(date -u)" "2.6.4 passed CP" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_6_4 -bool false; else
+		echo "* 2.6.4 Disable iCloud Drive Document sync with configuration profile" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.6.4 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.6.5 iCloud Drive Desktop sync
+# Configuration Profile - Restrictions payload - &gt; Functionality &gt; Allow iCloud Desktop &amp; Documents (unchecked)
+# Verify organizational score
+Audit2_6_5="$($Defaults read "$plistlocation" OrgScore2_6_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_6_5" = "1" ]; then
+	# If client fails, then note category in audit file
+	CP_icloudDriveDocSync="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'allowCloudDesktopAndDocuments = 0')"
+	if [[ "$CP_icloudDriveDocSync" -gt "0" ]] ; then
+		echo "$(date -u)" "2.6.5 passed CP" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_6_5 -bool false; else
+		echo "* 2.6.5 Disable iCloud Drive Desktop sync with configuration profile" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.6.5 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.7.1 Time Machine Auto-Backup
+# Verify organizational score
+Audit2_7_1="$($Defaults read "$plistlocation" OrgScore2_7_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_7_1" = "1" ]; then
+	timeMachineAuto="$( $Defaults read /Library/Preferences/com.apple.TimeMachine.plist AutoBackup )"
+	# If client fails, then note category in audit file
+	if [ "$timeMachineAuto" != "1" ]; then
+		echo "* 2.7.1 Time Machine Auto-Backup" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.7.1 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "2.7.1 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_7_1 -bool false
+	fi
+fi
+
+# 2.8 Disable "Wake for network access"
+# Verify organizational score
+Audit2_8="$($Defaults read "$plistlocation" OrgScore2_8)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_8" = "1" ]; then
+	CP_wompEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c '"Wake On LAN" = 0')"
+		# If client fails, then note category in audit file
+		if [[ "$CP_wompEnabled" = "3" ]] ; then
+			echo "$(date -u)" "2.8 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_8 -bool false; else
+			wompEnabled="$(pmset -g | grep womp | awk '{print $2}')"
+			if [ "$wompEnabled" = "0" ]; then
+				echo "$(date -u)" "2.8 passed" | tee -a "$logFile"
+				$Defaults write "$plistlocation" OrgScore2_8 -bool false; else
+				echo "* 2.8 Disable Wake for network access" &gt;&gt; "$auditfilelocation"
+				echo "$(date -u)" "2.8 fix" | tee -a "$logFile"
+			fi
+		fi
+fi
+
+# 2.9 Disable Power Nap
+# Verify organizational score
+Audit2_9="$($Defaults read "$plistlocation" OrgScore2_9)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_9" = "1" ]; then
+	napEnabled="$(pmset -g everything | grep -c 'powernap             1')"
+	if [ "$napEnabled" = 0 ]; then
+		echo "$(date -u)" "2.9 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_9 -bool false; else
+		echo "* 2.9 Disable Power Nap" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "2.9 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 2.10 Enable Secure Keyboard Entry in terminal.app 
+# Configuration Profile - Custom payload &gt; com.apple.Terminal &gt; SecureKeyboardEntry=true
+# Verify organizational score
+Audit2_10="$($Defaults read "$plistlocation" OrgScore2_10)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_10" = "1" ]; then
+	CP_secureKeyboard="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'SecureKeyboardEntry = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_secureKeyboard" -gt "0" ]] ; then
+		echo "$(date -u)" "2.10 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore2_10 -bool false; else
+		secureKeyboard="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.Terminal SecureKeyboardEntry)"
+		iTermSecure="$($Defaults read -app iTerm 'Secure Input')"
+		if [ "$secureKeyboard" = "1" ] &amp;&amp; ["$iTermSecure" -ne "0" ]; then
+			echo "$(date -u)" "2.10 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_10 -bool false; else
+			echo "* 2.10 Enable Secure Keyboard Entry in terminal.app" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "2.10 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 2.11 Ensure EFI version is valid and being regularly checked
+# Audit only.  T2 chip Macs do not allow for use of eficheck
+# Verify organizational score
+Audit2_11="$($Defaults read "$plistlocation" OrgScore2_11)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit2_11" = "1" ]; then
+# Check for T2 chip.  
+if system_profiler SPiBridgeDataType | grep 'Model Name:' | grep -q 'T2'; then 
+	$Defaults write "$plistlocation" OrgScore2_11 -bool false
+	echo "$(date -u)" "2.11 passed" | tee -a "$logFile"
+	else
+		efiStatus="$(/usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check | grep -c "No changes detected")"
+		if [ "$efiStatus" -gt 0 ]; then
+			echo "$(date -u)" "2.11 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore2_11 -bool false
+			else
+				echo "* 2.11 Ensure EFI version is valid and being regularly checked" &gt;&gt; "$auditfilelocation"
+				echo "$(date -u)" "2.11 fix" | tee -a "$logFile"
+				fi
+fi
+fi
+
+
+
+# 3.1 Enable security auditing
+# Verify organizational score
+Audit3_1="$($Defaults read "$plistlocation" OrgScore3_1)"
+# If organizational score is 1 or true, check status of client
+# If client fails, then remediate
+if [ "$Audit3_1" = "1" ]; then
+       auditdEnabled=$(launchctl list | grep -c auditd)
+       if [ "$auditdEnabled" -gt "0" ]; then
+           echo "$(date -u)" "3.1 passed" | tee -a "$logFile"
+           $Defaults write "$plistlocation" OrgScore3_1 -bool false
+       else
+           echo "* 3.1 Enable security auditing" &gt;&gt; "$auditfilelocation"
+           echo "$(date -u)" "3.1 fix" | tee -a "$logFile"
+       fi
+fi
+
+# 3.2 Configure Security Auditing Flags
+# Verify organizational score
+Audit3_2="$($Defaults read "$plistlocation" OrgScore3_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit3_2" = "1" ]; then
+	auditFlags="$(egrep "^flags:" /etc/security/audit_control)"
+	# If client fails, then note category in audit file
+	if [[ ${auditFlags} != *"ad"* ]];then
+		echo "* 3.2 Configure Security Auditing Flags" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "3.2 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "3.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore3_2 -bool false
+	fi
+fi
+
+# 3.3 Retain install.log for 365 or more days 
+# Verify organizational score
+Audit3_3="$($Defaults read "$plistlocation" OrgScore3_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit3_3" = "1" ]; then
+	installRetention="$(grep -i ttl /etc/asl/com.apple.install | awk -F'ttl=' '{print $2}')"
+	# If client fails, then note category in audit file
+	if [[ "$installRetention" = "" ]] || [[ "$installRetention" -lt "365" ]]; then
+		echo "* 3.3 Retain install.log for 365 or more days" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "3.3 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "3.3 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore3_3 -bool false
+	fi
+fi
+
+# 3.4 Ensure security auditing retention
+# Verify organizational score
+Audit3_4="$($Defaults read "$plistlocation" OrgScore3_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit3_4" = "1" ]; then
+	auditRetention="$(cat /etc/security/audit_control | egrep expire-after)"
+	if [ "$auditRetention" = "expire-after:60d OR 1G" ]; then
+		echo "$(date -u)" "3.4 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore3_4 -bool false; else
+		echo "* 3.4 Ensure security auditing retention" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "3.4 fix" | tee -a "$logFile"
+		fi
+	fi
+		
+
+# 3.5 Control access to audit records
+# Audit only.  Remediation requires system inspection.
+# Verify organizational score
+Audit3_5="$($Defaults read "$plistlocation" OrgScore3_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit3_5" = "1" ]; then
+	etccheck=$(ls -le /etc/security/audit_control | grep -v '\-r--------  1 root  wheel')
+	varcheck=$(ls -le /var/audit | grep -v '\-r--r-----  1 root  wheel\|current\|total')
+	if [[ "$etccheck" = "" ]] &amp;&amp; [[ "$varcheck" = "" ]]; then
+		echo "$(date -u)" "3.5 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore3_5 -bool false
+	else
+		echo "* 3.5 Control access to audit records" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "3.5 fix" | tee -a "$logFile"
+	fi
+fi
+	
+
+# 3.6 Ensure Firewall is configured to log
+# Verify organizational score
+Audit3_6="$($Defaults read "$plistlocation" OrgScore3_6)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit3_6" = "1" ]; then
+	FWlog=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getloggingmode | sed -e 's/[[:space:]]*$//')
+	if [ "$FWlog" = "Log mode is on" ]; then
+		echo "$(date -u)" "3.6 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore3_6 -bool false; else
+		echo "* 3.6 Ensure Firewall is configured to log" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "3.6 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 4.1 Disable Bonjour advertising service 
+# Configuration Profile - Custom payload &gt; com.apple.mDNSResponder &gt; NoMulticastAdvertisements=true
+# Verify organizational score
+Audit4_1="$($Defaults read "$plistlocation" OrgScore4_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit4_1" = "1" ]; then
+    CP_bonjourAdvertise="$(/usr/bin/defaults read /Library/Preferences/com.apple.mDNSResponder.plist NoMulticastAdvertisements)"
+	# If client fails, then note category in audit file
+	if [[ "$CP_bonjourAdvertise" == "1" ]];then
+		echo "$(date -u)" "4.1 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore4_1 -bool false
+	else
+		bonjourAdvertise="$( $Defaults read /Library/Preferences/com.apple.mDNSResponder | /usr/bin/grep NoMulticastAdvertisements )"
+		if [ "$bonjourAdvertise" != "1" ] || [ "$boujourAdvertise" = "" ]; then
+			echo "* 4.1 Disable Bonjour advertising service" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "4.1 fix" | tee -a "$logFile"
+		else
+			echo "$(date -u)" "4.1 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore4_1 -bool false
+		fi
+	fi
+fi
+
+# 4.2 Enable "Show Wi-Fi status in menu bar" 
+# Verify organizational score
+Audit4_2="$($Defaults read "$plistlocation" OrgScore4_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit4_2" = "1" ]; then
+	wifiMenuBar="$($Defaults -currentHost read com.apple.controlcenter.plist WiFi)"
+	# If client fails, then note category in audit file
+	if [ "$wifiMenuBar" -ne 18 ]; then
+		echo "* 4.2 Enable Show Wi-Fi status in menu bar" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "4.2 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "4.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore4_2 -bool false
+	fi
+fi
+
+# 4.4 Ensure http server is not running 
+# Verify organizational score
+Audit4_4="$($Defaults read "$plistlocation" OrgScore4_4)"
+# If organizational score is 1 or true, check status of client
+# Code fragment from https://github.com/krispayne/CIS-Settings/blob/master/ElCapitan_CIS.sh
+if [ "$Audit4_4" = "1" ]; then
+	httpdDisabled="$(launchctl print-disabled system | /usr/bin/grep -c '"org.apache.httpd" =&gt; true')"
+	if [ "$httpdDisabled" = 0 ]; then
+		echo "* 4.4 Ensure http server is not running" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "4.4 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "4.4 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore4_4 -bool false
+	fi
+fi
+
+# 4.5 Ensure nfs server is not running
+# Verify organizational score
+Audit4_5="$($Defaults read "$plistlocation" OrgScore4_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit4_5" = "1" ]; then
+	# If client fails, then note category in audit file
+	if [ -e /etc/exports  ]; then
+		echo "4.5 Ensure nfs server is not running" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "4.5 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "4.5 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore4_5 -bool false
+	fi
+fi
+
+# 5.1.1 Secure Home Folders
+# Verify organizational score
+Audit5_1_1="$($Defaults read "$plistlocation" OrgScore5_1_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_1_1" = "1" ]; then
+	homeFolders="$(find /Users -mindepth 1 -maxdepth 1 -type d -perm -1 | grep -v "Shared" | grep -v "Guest" | wc -l | xargs)"
+	# If client fails, then note category in audit file
+	if [ "$homeFolders" = "0" ]; then
+		echo "$(date -u)" "5.1.1 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_1_1 -bool false; else
+		echo "* 5.1.1 Secure Home Folders" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.1.1 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.1.2 Check System Wide Applications for appropriate permissions
+# Verify organizational score
+Audit5_1_2="$($Defaults read "$plistlocation" OrgScore5_1_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_1_2" = "1" ]; then
+	appPermissions="$(find /Applications -iname "*\.app" -type d -perm -2 -ls | wc -l | xargs)"
+	# If client fails, then note category in audit file
+	if [ "$appPermissions" = "0" ]; then
+		echo "$(date -u)" "5.1.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_1_2 -bool false; else
+		echo "* 5.1.2 Check System Wide Applications for appropriate permissions" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.1.2 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.1.3 Check System folder for world writable files
+# Verify organizational score
+Audit5_1_3="$($Defaults read "$plistlocation" OrgScore5_1_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_1_3" = "1" ]; then
+	sysPermissions="$(find  /System/Volumes/Data/System -type d -perm -2 -ls | grep -v "Public/Drop Box" | wc -l | xargs)"
+	# If client fails, then note category in audit file
+	if [ "$sysPermissions" = "0" ]; then
+		echo "$(date -u)" "5.1.3 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_1_3 -bool false; else
+		echo "* 5.1.3 Check System folder for world writable files" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.1.3 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.1.4 Check Library folder for world writable files
+# Verify organizational score
+Audit5_1_4="$($Defaults read "$plistlocation" OrgScore5_1_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_1_4" = "1" ]; then
+	libPermissions="$(find /Library -type d -perm -2 -ls | grep -v Caches | grep -v Adobe | grep -v VMware | grep -v "/Audio/Data" | wc -l | xargs)"
+	# If client fails, then note category in audit file
+	if [ "$libPermissions" = "0" ]; then
+		echo "$(date -u)" "5.1.4 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_1_4 -bool false; else
+		echo "* 5.1.4 Check Library folder for world writable files" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.1.4 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.3 Reduce the sudo timeout period
+# Verify organizational score
+Audit5_3="$($Defaults read "$plistlocation" OrgScore5_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_3" = "1" ]; then
+    sudoTimeout="$(cat /private/etc/sudoers.d/defaults_timestamp_timeout | grep -c 'timestamp_timeout = 0')"
+	# If client fails, then note category in audit file
+	if [ "$sudoTimeout" = "" ]; then
+		echo "* 5.3 Reduce the sudo timeout period" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.3 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "5.3 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_3 -bool false
+	fi
+fi
+
+
+# 5.5 Automatically lock the login keychain for inactivity
+# Verify organizational score
+Audit5_4="$($Defaults read "$plistlocation" OrgScore5_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_4" = "1" ]; then
+	keyTimeout="$(security show-keychain-info /Users/"$currentUser"/Library/Keychains/login.keychain 2&gt;&amp;1 | grep -c "no-timeout")"
+	# If client fails, then note category in audit file
+	if [ "$keyTimeout" -gt 0 ]; then
+		echo "* 5.4 Automatically lock the login keychain for inactivity" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.4 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "5.4 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_4 -bool false
+	fi
+fi
+
+# 5.5 Use a separate timestamp for each user/tty combo
+# Verify organizational score
+Audit5_5="$($Defaults read "$plistlocation" OrgScore5_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_5" = "1" ]; then
+	ttyTimestamp="$(cat /etc/sudoers | egrep tty_tickets)"
+	# If client fails, then note category in audit file
+	if [ "$ttyTimestamp" != "" ]; then
+		echo "* 5.5 Use a separate timestamp for each user/tty combo" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.5 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "5.5 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_5 -bool false
+	fi
+fi
+
+# 5.6 Ensure login keychain is locked when the computer sleeps
+# Verify organizational score
+Audit5_6="$($Defaults read "$plistlocation" OrgScore5_6)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_6" = "1" ]; then
+	lockSleep="$(security show-keychain-info /Users/"$currentUser"/Library/Keychains/login.keychain 2&gt;&amp;1 | grep -c "lock-on-sleep")"
+	# If client fails, then note category in audit file
+	if [ "$lockSleep" = 0 ]; then
+		echo "* 5.6 Ensure login keychain is locked when the computer sleeps" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.6 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "5.6 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_6 -bool false
+	fi
+fi
+
+# 5.7 Do not enable the "root" account
+# Verify organizational score
+Audit5_7="$($Defaults read "$plistlocation" OrgScore5_7)"
+if [ "$Audit5_7" = "1" ]; then
+	#echo "$(date -u)" "Checking 5.7" | tee -a "$logFile"
+	rootEnabled="$(dscl . -read /Users/root AuthenticationAuthority 2&gt;&amp;1 | grep -c "No such key")"
+	rootEnabledRemediate="$(dscl . -read /Users/root UserShell 2&gt;&amp;1 | grep -c "/usr/bin/false")"
+	if [ "$rootEnabled" = "1" ]; then
+		echo "$(date -u)" "5.7 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_7 -bool false; elif
+		[ "$rootEnabledRemediate" = "1" ]; then
+		   echo "$(date -u)" "5.7 passed due to remediation" | tee -a "$logFile"
+		   $Defaults write "$plistlocation" OrgScore5_7 -bool false
+	else
+	echo "* 5.7 Do Not enable the "root" account" &gt;&gt; "$auditfilelocation"
+	echo "$(date -u)" "5.7 fix" | tee -a "$logFile"
+
+	fi
+fi
+
+# 5.8 Disable automatic login
+# Configuration Profile - LoginWindow payload &gt; Options &gt; Disable automatic login (checked)
+# Verify organizational score
+Audit5_8="$($Defaults read "$plistlocation" OrgScore5_8)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_8" = "1" ]; then
+	CP_autologinEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'DisableAutoLoginClient')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_autologinEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "5.8 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_8 -bool false; else
+		autologinEnabled="$($Defaults read /Library/Preferences/com.apple.loginwindow | grep -ow "autoLoginUser")"
+		if [ "$autologinEnabled" = "" ]; then
+			echo "$(date -u)" "5.8 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore5_8 -bool false; else
+			echo "* 5.8 Disable automatic login" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "5.8 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 5.9 Require a password to wake the computer from sleep or screen saver
+# Configuration Profile - Security and Privacy payload &gt; General &gt; Require password * after sleep or screen saver begins (checked)
+# Verify organizational score
+Audit5_9="$($Defaults read "$plistlocation" OrgScore5_9)"
+# If organizational score is 1 or true, check status of client
+# If client fails, then note category in audit file
+if [ "$Audit5_9" = "1" ]; then
+	CP_screensaverPwd="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'askForPassword = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_screensaverPwd" -gt "0" ]] ; then
+		echo "$(date -u)" "5.9 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_9 -bool false; else
+		screensaverPwd="$($Defaults read /Users/"$currentUser"/Library/Preferences/com.apple.screensaver askForPassword)"
+		if [ "$screensaverPwd" = "1" ]; then
+			echo "$(date -u)" "5.9 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore5_9 -bool false; else
+			echo "* 5.9 Require a password to wake the computer from sleep or screen saver" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "5.9 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 5.10 Ensure system is set to hibernate and Destroy FileVault Key
+# Verify organizational score
+Audit5_10="$($Defaults read "$plistlocation" OrgScore5_10)"
+# If client fails, then note category in audit file
+if [ "$Audit5_10" = "1" ]; then
+	macType=$(system_profiler SPHardwareDataType | egrep -c "Model Identifier: MacBook")
+	if [[ "$macType" -ge 0 ]]; then
+		hibernateValue=$(pmset -g | egrep standbydelaylow | awk '{print $2}')
+		if [[ "$hibernateValue" == "" ]] || [[ "$hibernateValue" -gt 600 ]]; then
+			echo "$(date -u)" "5.10 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore5_10 -bool false
+		else
+			echo "* 5.10 Ensure system is set to hibernate" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "5.10 fix" | tee -a "$logFile"
+		fi
+	else
+		echo "$(date -u)" "5.10 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_10 -bool false
+	fi
+fi
+
+# 5.11 Require an administrator password to access system-wide preferences
+# Verify organizational score
+Audit5_11="$($Defaults read "$plistlocation" OrgScore5_11)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_11" = "1" ]; then
+	adminSysPrefs="$(security authorizationdb read system.preferences 2&gt; /dev/null | grep -A1 shared | grep -E '(true|false)' | grep -c "true")"
+	# If client fails, then note category in audit file
+	if [ "$adminSysPrefs" = "1" ]; then
+		echo "* 5.11 Require an administrator password to access system-wide preferences" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.11 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "5.11 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_11 -bool false
+	fi
+fi
+
+# 5.12 Disable ability to login to another user's active and locked session
+# Verify organizational score
+Audit5_12="$($Defaults read "$plistlocation" OrgScore5_12)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_12" = "1" ]; then
+	screensaverRules="$(/usr/bin/security authorizationdb read system.login.screensaver 2&gt;&amp;1 | grep -c 'use-login-window-ui')"
+	# If client fails, then note category in audit file
+	if [ "$screensaverRules" = "1" ]; then
+		echo "$(date -u)" "5.12 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_12 -bool false
+     else
+		echo "* 5.12 Disable ability to login to another users active and locked session" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.12 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.13 Create a custom message for the Login Screen
+# Configuration Profile - LoginWindow payload &gt; Window &gt; Banner (message)
+# Verify organizational score
+Audit5_13="$($Defaults read "$plistlocation" OrgScore5_13)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_13" = "1" ]; then
+	CP_loginMessage="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'LoginwindowText')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_loginMessage" -gt "0" ]] ; then
+		echo "$(date -u)" "5.13 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_13 -bool false; else
+		loginMessage="$($Defaults read /Library/Preferences/com.apple.loginwindow.plist LoginwindowText)"
+		if [[ $loginMessage = "" ]] || [[ $loginMessage = *"does not exist"* ]]; then
+			echo "* 5.13 Create a custom message for the Login Screen" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "5.13 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "5.13 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore5_13 -bool false
+		fi
+	fi
+fi
+
+# 5.14 Create a Login window banner
+# Policy Banner https://support.apple.com/en-us/HT202277
+# Verify organizational score
+Audit5_14="$($Defaults read "$plistlocation" OrgScore5_14)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_14" = "1" ]; then
+	# If client fails, then note category in audit file
+	if [ -e /Library/Security/PolicyBanner.txt ] || [ -e /Library/Security/PolicyBanner.rtf ] || [ -e /Library/Security/PolicyBanner.rtfd ]; then
+		echo "$(date -u)" "5.14 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_14 -bool false; else
+		echo "* 5.14 Create a Login window banner" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.14 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.16 Disable Fast User Switching (Not Scored)
+# Configuration Profile - LoginWindow payload &gt; Options &gt; Enable Fast User Switching (unchecked)
+# Verify organizational score
+Audit5_16="$($Defaults read "$plistlocation" OrgScore5_16)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_16" = "1" ]; then
+	CP_FastUserSwitching="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'MultipleSessionEnabled = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_FastUserSwitching" -gt "0" ]] ; then
+		echo "$(date -u)" "5.16 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_16 -bool false; else
+		FastUserSwitching="$($Defaults read /Library/Preferences/.GlobalPreferences MultipleSessionEnabled)"
+		if [ "$FastUserSwitching" = "0" ]; then
+			echo "$(date -u)" "5.16 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore5_16 -bool false; else
+			echo "* 5.16 Disable Fast User Switching" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "5.16 fix" | tee -a "$logFile"
+		fi
+	fi
+fi
+
+# 5.18 System Integrity Protection status
+# Verify organizational score
+Audit5_18="$($Defaults read "$plistlocation" OrgScore5_18)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_18" = "1" ]; then
+	sipEnabled="$(/usr/bin/csrutil status | awk '{print $5}')"
+	# If client fails, then note category in audit file
+	if [ "$sipEnabled" = "enabled." ]; then
+		echo "$(date -u)" "5.18 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_18 -bool false; else
+		echo "* 5.18 System Integrity Protection status - not enabled" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.18 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.19 Enable Sealed System Volume (SSV) 
+# Verify organizational score
+Audit5_19="$($Defaults read "$plistlocation" OrgScore5_19)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_19" = "1" ]; then
+	ssvEnabled="$(/usr/bin/csrutil authenticated-root status | awk '{print $4}')"
+	# If client fails, then note category in audit file
+	if [ "$ssvEnabled" = "enabled" ]; then
+		echo "$(date -u)" "5.19 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_19 -bool false; else
+		echo "* 5.19 Enable Sealed System Volume (SSV) - not enabled" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.19 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 5.20 Enable Library Validation 
+# Verify organizational score
+Audit5_19="$($Defaults read "$plistlocation" OrgScore5_20)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit5_20" = "1" ]; then
+	libValidationDisabled="$($Defaults read /Library/Preferences/com.apple.security.librarayvalidation.plist DisableLibraryValidation)"
+	# If client fails, then note category in audit file
+	if [ "$libValidationDisabled" = 0 ]; then
+		echo "$(date -u)" "5.20 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore5_20 -bool false; else
+		echo "* 5.20 Library Validation - not enabled" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "5.20 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 6.1.1 Display login window as name and password
+# Configuration Profile - LoginWindow payload &gt; Window &gt; LOGIN PROMPT &gt; Name and password text fields (selected)
+# Verify organizational score
+Audit6_1_1="$($Defaults read "$plistlocation" OrgScore6_1_1)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_1_1" = "1" ]; then
+	CP_loginwindowFullName="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'SHOWFULLNAME = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_loginwindowFullName" -gt "0" ]] ; then
+		echo "$(date -u)" "6.1.1 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_1_1 -bool false; else
+		loginwindowFullName="$($Defaults read /Library/Preferences/com.apple.loginwindow SHOWFULLNAME)"
+		if [ "$loginwindowFullName" != "1" ]; then
+			echo "* 6.1.1 Display login window as name and password" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "6.1.1 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "6.1.1 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore6_1_1 -bool false
+		fi
+	fi
+fi
+
+# 6.1.2 Disable "Show password hints"
+# Configuration Profile - LoginWindow payload &gt; Options &gt; Show password hint when needed and available (unchecked - Yes this is backwards)
+# Verify organizational score
+Audit6_1_2="$($Defaults read "$plistlocation" OrgScore6_1_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_1_2" = "1" ]; then
+	CP_passwordHints="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'RetriesUntilHint = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_passwordHints" -gt "0" ]] ; then
+		echo "$(date -u)" "6.1.2 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_1_2 -bool false; else
+		passwordHints="$($Defaults read /Library/Preferences/com.apple.loginwindow RetriesUntilHint)"
+		if [ "$passwordHints" -gt 0 ] || [ "$passwordHints" = *exist* ]; then
+			echo "* 6.1.2 Disable Show password hints" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "6.1.2 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "6.1.2 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore6_1_2 -bool false
+		fi
+	fi
+fi
+
+# 6.1.3 Disable guest account
+# Configuration Profile - LoginWindow payload &gt; Options &gt; Allow Guest User (unchecked)
+# Verify organizational score
+Audit6_1_3="$($Defaults read "$plistlocation" OrgScore6_1_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_1_3" = "1" ]; then
+	CP_guestEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'DisableGuestAccount = 1')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_guestEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "6.1.3 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_1_3 -bool false; else
+		guestEnabled="$($Defaults read /Library/Preferences/com.apple.loginwindow.plist GuestEnabled)"
+		if [ "$guestEnabled" = 1 ]; then
+			echo "* 6.1.3 Disable guest account" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "6.1.3 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "6.1.3 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore6_1_3 -bool false
+		fi
+	fi
+fi
+
+# 6.1.4 Disable "Allow guests to connect to shared folders"
+# Configuration Profile - 6.1.4 Disable Allow guests to connect to shared folders - Custom payload &gt; com.apple.AppleFileServer guestAccess=false, com.apple.smb.server AllowGuestAccess=false
+# Verify organizational score
+Audit6_1_4="$($Defaults read "$plistlocation" OrgScore6_1_4)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_1_4" = "1" ]; then
+	CP_afpGuestEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'guestAccess = 0')"
+	CP_smbGuestEnabled="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'AllowGuestAccess = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_afpGuestEnabled" -gt "0" ]] || [[ "$CP_smbGuestEnabled" -gt "0" ]] ; then
+		echo "$(date -u)" "6.1.4 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_1_4 -bool false; else
+		afpGuestEnabled="$($Defaults read /Library/Preferences/com.apple.AppleFileServer guestAccess)"
+		smbGuestEnabled="$($Defaults read /Library/Preferences/SystemConfiguration/com.apple.smb.server AllowGuestAccess)"
+		if [ "$afpGuestEnabled" = "1" ] || [ "$smbGuestEnabled" = "1" ]; then
+			echo "* 6.1.4 Disable Allow guests to connect to shared folders" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "6.1.4 fix" | tee -a "$logFile"
+		else
+			echo "$(date -u)" "6.1.4 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore6_1_4 -bool false
+		fi
+	fi
+fi
+
+# 6.1.5 Remove Guest home folder
+# Verify organizational score
+Audit6_1_5="$($Defaults read "$plistlocation" OrgScore6_1_5)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_1_5" = "1" ]; then
+	# If client fails, then note category in audit file
+	if [ -e /Users/Guest ]; then
+		echo "* 6.1.5 Remove Guest home folder" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "6.1.5 fix" | tee -a "$logFile"; else
+		echo "$(date -u)" "6.1.5 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_1_5 -bool false
+	fi
+fi
+
+# 6.2 Turn on filename extensions
+# Does not work as a Configuration Profile - .GlobalPreferences.plist
+# Verify organizational score
+Audit6_2="$($Defaults read "$plistlocation" OrgScore6_2)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_2" = "1" ]; then
+		filenameExt="$($Defaults read /Users/"$currentUser"/Library/Preferences/.GlobalPreferences.plist AppleShowAllExtensions)"
+	# If client fails, then note category in audit file
+	if [ "$filenameExt" = "1" ]; then
+		echo "$(date -u)" "6.2 passed" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_2 -bool false; else
+		echo "* 6.2 Turn on filename extensions" &gt;&gt; "$auditfilelocation"
+		echo "$(date -u)" "6.2 fix" | tee -a "$logFile"
+	fi
+fi
+
+# 6.3 Disable the automatic run of safe files in Safari
+# Configuration Profile - Custom payload &gt; com.apple.Safari &gt; AutoOpenSafeDownloads=false
+# Verify organizational score
+Audit6_3="$($Defaults read "$plistlocation" OrgScore6_3)"
+# If organizational score is 1 or true, check status of client
+if [ "$Audit6_3" = "1" ]; then
+	CP_safariSafe="$(/usr/sbin/system_profiler SPConfigurationProfileDataType | /usr/bin/grep -c 'AutoOpenSafeDownloads = 0')"
+	# If client fails, then note category in audit file
+	if [[ "$CP_safariSafe" -gt "0" ]] ; then
+		echo "$(date -u)" "6.3 passed cp" | tee -a "$logFile"
+		$Defaults write "$plistlocation" OrgScore6_3 -bool false; else
+		safariSafe="$(/usr/libexec/PlistBuddy -c "Print:AutoOpenSafeDownloads" /Users/"$currentUser"/Library/Containers/com.apple.Safari/Data/Library/Preferences/com.apple.Safari.plist)"
+		if [[ "$safariSafe" = "true" ]]; then
+			echo "* 6.3 Disable the automatic run of safe files in Safari" &gt;&gt; "$auditfilelocation"
+			echo "$(date -u)" "6.3 fix" | tee -a "$logFile"; else
+			echo "$(date -u)" "6.3 passed" | tee -a "$logFile"
+			$Defaults write "$plistlocation" OrgScore6_3 -bool false
+		fi
+	fi
+fi
+
+echo "$(date -u)" "Audit complete" | tee -a "$logFile"
+exit 0</script_contents>
+    <script_contents_encoded>IyEvYmluL2Jhc2gKCiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMKIwojIENvcHlyaWdodCAoYykgMjAxNywgSmFtZiwgTExDLiAgQWxsIHJpZ2h0cyByZXNlcnZlZC4KIwojICAgICAgIFJlZGlzdHJpYnV0aW9uIGFuZCB1c2UgaW4gc291cmNlIGFuZCBiaW5hcnkgZm9ybXMsIHdpdGggb3Igd2l0aG91dAojICAgICAgIG1vZGlmaWNhdGlvbiwgYXJlIHBlcm1pdHRlZCBwcm92aWRlZCB0aGF0IHRoZSBmb2xsb3dpbmcgY29uZGl0aW9ucyBhcmUgbWV0OgojICAgICAgICAgICAgICAgKiBSZWRpc3RyaWJ1dGlvbnMgb2Ygc291cmNlIGNvZGUgbXVzdCByZXRhaW4gdGhlIGFib3ZlIGNvcHlyaWdodAojICAgICAgICAgICAgICAgICBub3RpY2UsIHRoaXMgbGlzdCBvZiBjb25kaXRpb25zIGFuZCB0aGUgZm9sbG93aW5nIGRpc2NsYWltZXIuCiMgICAgICAgICAgICAgICAqIFJlZGlzdHJpYnV0aW9ucyBpbiBiaW5hcnkgZm9ybSBtdXN0IHJlcHJvZHVjZSB0aGUgYWJvdmUgY29weXJpZ2h0CiMgICAgICAgICAgICAgICAgIG5vdGljZSwgdGhpcyBsaXN0IG9mIGNvbmRpdGlvbnMgYW5kIHRoZSBmb2xsb3dpbmcgZGlzY2xhaW1lciBpbiB0aGUKIyAgICAgICAgICAgICAgICAgZG9jdW1lbnRhdGlvbiBhbmQvb3Igb3RoZXIgbWF0ZXJpYWxzIHByb3ZpZGVkIHdpdGggdGhlIGRpc3RyaWJ1dGlvbi4KIyAgICAgICAgICAgICAgICogTmVpdGhlciB0aGUgbmFtZSBvZiB0aGUgSkFNRiBTb2Z0d2FyZSwgTExDIG5vciB0aGUKIyAgICAgICAgICAgICAgICAgbmFtZXMgb2YgaXRzIGNvbnRyaWJ1dG9ycyBtYXkgYmUgdXNlZCB0byBlbmRvcnNlIG9yIHByb21vdGUgcHJvZHVjdHMKIyAgICAgICAgICAgICAgICAgZGVyaXZlZCBmcm9tIHRoaXMgc29mdHdhcmUgd2l0aG91dCBzcGVjaWZpYyBwcmlvciB3cml0dGVuIHBlcm1pc3Npb24uCiMKIyAgICAgICBUSElTIFNPRlRXQVJFIElTIFBST1ZJREVEIEJZIEpBTUYgU09GVFdBUkUsIExMQyAiQVMgSVMiIEFORCBBTlkKIyAgICAgICBFWFBSRVNTIE9SIElNUExJRUQgV0FSUkFOVElFUywgSU5DTFVESU5HLCBCVVQgTk9UIExJTUlURUQgVE8sIFRIRSBJTVBMSUVECiMgICAgICAgV0FSUkFOVElFUyBPRiBNRVJDSEFOVEFCSUxJVFkgQU5EIEZJVE5FU1MgRk9SIEEgUEFSVElDVUxBUiBQVVJQT1NFIEFSRQojICAgICAgIERJU0NMQUlNRUQuIElOIE5PIEVWRU5UIFNIQUxMIEpBTUYgU09GVFdBUkUsIExMQyBCRSBMSUFCTEUgRk9SIEFOWQojICAgICAgIERJUkVDVCwgSU5ESVJFQ1QsIElOQ0lERU5UQUwsIFNQRUNJQUwsIEVYRU1QTEFSWSwgT1IgQ09OU0VRVUVOVElBTCBEQU1BR0VTCiMgICAgICAgKElOQ0xVRElORywgQlVUIE5PVCBMSU1JVEVEIFRPLCBQUk9DVVJFTUVOVCBPRiBTVUJTVElUVVRFIEdPT0RTIE9SIFNFUlZJQ0VTOwojICAgICAgIExPU1MgT0YgVVNFLCBEQVRBLCBPUiBQUk9GSVRTOyBPUiBCVVNJTkVTUyBJTlRFUlJVUFRJT04pIEhPV0VWRVIgQ0FVU0VEIEFORAojICAgICAgIE9OIEFOWSBUSEVPUlkgT0YgTElBQklMSVRZLCBXSEVUSEVSIElOIENPTlRSQUNULCBTVFJJQ1QgTElBQklMSVRZLCBPUiBUT1JUCiMgICAgICAgKElOQ0xVRElORyBORUdMSUdFTkNFIE9SIE9USEVSV0lTRSkgQVJJU0lORyBJTiBBTlkgV0FZIE9VVCBPRiBUSEUgVVNFIE9GIFRISVMKIyAgICAgICBTT0ZUV0FSRSwgRVZFTiBJRiBBRFZJU0VEIE9GIFRIRSBQT1NTSUJJTElUWSBPRiBTVUNIIERBTUFHRS4KIwojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiMgd3JpdHRlbiBieSBLYXRpZSBFbmdsaXNoLCBKYW1mIE9jdG9iZXIgMjAxNgojIHVwZGF0ZWQgZm9yIDEwLjEyIENJUyBiZW5jaG1hcmtzIGJ5IEthdGllIEVuZ2xpc2gsIEphbWYgRmVicnVhcnkgMjAxNwojIHVwZGF0ZWQgdG8gdXNlIGNvbmZpZ3VyYXRpb24gcHJvZmlsZXMgYnkgQXBwbGUgUHJvZmVzc2lvbmFsIFNlcnZpY2VzLCBKYW51YXJ5IDIwMTgKIyB1cGRhdGVkIHRvIHVzZSBSRVNUIEFQSSB0byB1cGRhdGUgRUFzIGluc3RlYWQgb2YgcmVjb24KIyBnaXRodWIuY29tL2phbWZwcm9mZXNzaW9uYWxzZXJ2aWNlcwojIHVwZGF0ZWQgZm9yIDEwLjEzIENJUyBiZW5jaG1hcmtzIGJ5IEVyaW4gTWNEb25hbGQsIEphbWYgSmFuIDIwMTkKIyB1cGRhdGVkIGZvciAxMC4xNSBDSVMgYmVuY2htYXJrcyBieSBFcmluIE1jRG9uYWxkLCBKYW1mIDIwMjAKCiMgVVNBR0UKIyBSZWFkcyBmcm9tIHBsaXN0IGF0IC9MaWJyYXJ5L0FwcGxpY2F0aW9uIFN1cHBvcnQvU2VjdXJpdHlTY29yaW5nL29yZ19zZWN1cml0eV9zY29yZS5wbGlzdCBieSBkZWZhdWx0LgojIEZvciAidHJ1ZSIgaXRlbXMsIHJ1bnMgcXVlcnkgZm9yIGN1cnJlbnQgY29tcHV0ZXIvdXNlciBjb21wbGlhbmNlLgojIE5vbi1jb21wbGlhbnQgaXRlbXMgYXJlIGxvZ2dlZCB0byAvTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0L1NlY3VyaXR5U2NvcmluZy9vcmdfYXVkaXQKIyBWYXJpYWJsZXMKCkRlZmF1bHRzPSIvdXNyL2Jpbi9kZWZhdWx0cyIKCgojIERPIE5PVCBFRElUIEJFTE9XIFRISVMgTElORQojIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCgpwbGlzdGxvY2F0aW9uPSIvTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0L1NlY3VyaXR5U2NvcmluZy9vcmdfc2VjdXJpdHlfc2NvcmUucGxpc3QiCmF1ZGl0ZmlsZWxvY2F0aW9uPSIvTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0L1NlY3VyaXR5U2NvcmluZy9vcmdfYXVkaXQiCmN1cnJlbnRVc2VyPSIkKHB5dGhvbiAtYyAnZnJvbSBTeXN0ZW1Db25maWd1cmF0aW9uIGltcG9ydCBTQ0R5bmFtaWNTdG9yZUNvcHlDb25zb2xlVXNlcjsgaW1wb3J0IHN5czsgdXNlcm5hbWUgPSAoU0NEeW5hbWljU3RvcmVDb3B5Q29uc29sZVVzZXIoTm9uZSwgTm9uZSwgTm9uZSkgb3IgW05vbmVdKVswXTsgdXNlcm5hbWUgPSBbdXNlcm5hbWUsIiJdW3VzZXJuYW1lIGluIFt1ImxvZ2lud2luZG93IiwgTm9uZSwgdSIiXV07IHN5cy5zdGRvdXQud3JpdGUodXNlcm5hbWUgKyAiXG4iKTsnKSIKaGFyZHdhcmVVVUlEPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BIYXJkd2FyZURhdGFUeXBlIHwgZ3JlcCAiSGFyZHdhcmUgVVVJRCIgfCBhd2sgLUYgIjogIiAne3ByaW50ICQyfScgfCB4YXJncykiCgpsb2dGaWxlPSIvTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0L1NlY3VyaXR5U2NvcmluZy9yZW1lZGlhdGlvbi5sb2ciCgpvc1ZlcnNpb249IiQoc3dfdmVycyAtcHJvZHVjdHZlcnNpb24pIgppZiBbICIkb3NWZXJzaW9uIiA8IDExIF07IHRoZW4KCWVjaG8gIlRoaXMgc2NyaXB0IGRvZXMgbm90IHN1cHBvcnQgQ2F0YWxpbmEuIFBsZWFzZSB1c2UgaHR0cHM6Ly9naXRodWIuY29tL2phbWYvQ0lTLWZvci1tYWNPUy1DYXRhbGluYS1DUCBpbnN0ZWFkIgoJZXhpdCAwCmZpCgoKaWYgW1sgJCh0YWlsIC1uIDEgIiRsb2dGaWxlIikgPSAqIlJlbWVkaWF0aW9uIGNvbXBsZXRlIiBdXTsgdGhlbgoJZWNobyAiQXBwZW5kIHRvIGV4aXN0aW5nIGxvZ0ZpbGUiCiAJZWNobyAiJChkYXRlIC11KSIgIkJlZ2lubmluZyBBdWRpdCIgPj4gIiRsb2dGaWxlIgplbHNlCiAJZWNobyAiQ3JlYXRlIG5ldyBsb2dGaWxlIgogCWVjaG8gIiQoZGF0ZSAtdSkiICJCZWdpbm5pbmcgQXVkaXQiID4gIiRsb2dGaWxlIgkKZmkKCmlmIFtbICEgLWUgJHBsaXN0bG9jYXRpb24gXV07IHRoZW4KCWVjaG8gIk5vIHNjb3JpbmcgZmlsZSBwcmVzZW50IgoJZXhpdCAwCmZpCgojIENsZWFudXAgYXVkaXQgZmlsZSB0byBzdGFydCBmcmVzaApbIC1mICIkYXVkaXRmaWxlbG9jYXRpb24iIF0gJiYgcm0gIiRhdWRpdGZpbGVsb2NhdGlvbiIKdG91Y2ggIiRhdWRpdGZpbGVsb2NhdGlvbiIKCgojIDEuMSBWZXJpZnkgYWxsIEFwcGxlIHByb3ZpZGVkIHNvZnR3YXJlIGlzIGN1cnJlbnQKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQxXzE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDFfMSIgPSAiMSIgXTsgdGhlbgoJY291bnRBdmFpbGFibGVTVVM9IiQoc29mdHdhcmV1cGRhdGUgLWwgfCBncmVwICIqIiB8IHdjIC1sIHwgdHIgLWQgJyAnKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGNvdW50QXZhaWxhYmxlU1VTIiA9ICIwIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjEuMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfMSAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMS4xIFZlcmlmeSBhbGwgQXBwbGUgcHJvdmlkZWQgc29mdHdhcmUgaXMgY3VycmVudCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMS4xIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMS4yIEVuYWJsZSBBdXRvIFVwZGF0ZQojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIEN1c3RvbSBwYXlsb2FkID4gY29tLmFwcGxlLlNvZnR3YXJlVXBkYXRlLnBsaXN0ID4gQXV0b21hdGljQ2hlY2tFbmFibGVkPXRydWUsIEF1dG9tYXRpY0Rvd25sb2FkPXRydWUKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQxXzI9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDFfMiIgPSAiMSIgXTsgdGhlbgoJIyBDaGVjayB0byBzZWUgaWYgdGhlIHByZWZlcmVuY2UgYW5kIGtleSBleGlzdC4gSWYgbm90LCB3cml0ZSB0byBhdWRpdCBsb2cuIFByZXN1bWluZzogVW5zZXQgPSBub3Qgc2VjdXJlIHN0YXRlLgoJQ1BfYXV0b21hdGljVXBkYXRlcz0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ0F1dG9tYXRpY0NoZWNrRW5hYmxlZCA9IDEnKSIKCWlmIFtbICIkQ1BfYXV0b21hdGljVXBkYXRlcyIgLWd0ICIwIiBdXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjIgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzIgLWJvb2wgZmFsc2U7IGVsc2UKCQlhdXRvbWF0aWNVcGRhdGVzPSIkKCREZWZhdWx0cyByZWFkIC9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5Tb2Z0d2FyZVVwZGF0ZSB8IC91c3IvYmluL2dyZXAgLWMgJ0F1dG9tYXRpY0NoZWNrRW5hYmxlZCA9IDEnKSIKCQlpZiBbWyAiJGF1dG9tYXRpY1VwZGF0ZXMiIC1ndCAiMCIgXV07IHRoZW4KCQkJZWNobyAiJChkYXRlIC11KSIgIjEuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzIgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAxLjIgRW5hYmxlIEF1dG8gVXBkYXRlIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMS4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWZpCglmaQpmaQoKIyAxLjMgRW5hYmxlIERvd25sb2FkIG5ldyB1cGRhdGVzIHdoZW4gYXZhaWxhYmxlCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0MV8zPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQxXzMiID0gIjEiIF07IHRoZW4KCSMgQ2hlY2sgdG8gc2VlIGlmIHRoZSBwcmVmZXJlbmNlIGFuZCBrZXkgZXhpc3QuIElmIG5vdCwgd3JpdGUgdG8gYXVkaXQgbG9nLiBQcmVzdW1pbmc6IFVuc2V0ID0gbm90IHNlY3VyZSBzdGF0ZS4KCQlDUF9hdXRvbWF0aWNBcHBVcGRhdGVzPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnQXV0b21hdGljRG93bmxvYWQgPSAxJykiCgkJaWYgW1sgIiRDUF9hdXRvbWF0aWNBcHBVcGRhdGVzIiAtZ3QgIjAiIF1dOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjMgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMV8zIC1ib29sIGZhbHNlOyBlbHNlCglhdXRvbWF0aWNBcHBVcGRhdGVzPSIkKCREZWZhdWx0cyByZWFkIC9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5Tb2Z0d2FyZVVwZGF0ZSBBdXRvbWF0aWNEb3dubG9hZCkiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRhdXRvbWF0aWNBcHBVcGRhdGVzIiA9ICIxIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjEuMyBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfMyAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMS4zIEVuYWJsZSBhcHAgdXBkYXRlIGluc3RhbGxzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjMgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQoJZmkKZmkKCiMgMS40IEVuYWJsZSBhcHAgdXBkYXRlcyAKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBTb2Z0d2FyZSBVcGRhdGUgLSBBdXRvbWF0aWNhbGx5IGluc3RhbGwgQXBwIFN0b3JlIGFwcCB1cGRhdGVzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0MV80PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzQpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQxXzQiID0gIjEiIF07IHRoZW4KCSMgQ2hlY2sgdG8gc2VlIGlmIHRoZSBwcmVmZXJlbmNlIGFuZCBrZXkgZXhpc3QuIElmIG5vdCwgd3JpdGUgdG8gYXVkaXQgbG9nLiBQcmVzdW1pbmc6IFVuc2V0ID0gbm90IHNlY3VyZSBzdGF0ZS4KCQlDUF9hdXRvbWF0aWNBcHBVcGRhdGVzPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnQXV0b21hdGljSW5zdGFsbEFwcFVwZGF0ZXMgPSAxJykiCgkJaWYgW1sgIiRDUF9hdXRvbWF0aWNBcHBVcGRhdGVzIiAtZ3QgIjAiIF1dOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjQgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMV80IC1ib29sIGZhbHNlOyBlbHNlCgkJYXV0b21hdGljQXBwVXBkYXRlcz0iJCgkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUuY29tbWVyY2UgQXV0b1VwZGF0ZSkiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRhdXRvbWF0aWNBcHBVcGRhdGVzIiA9ICIxIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjEuNCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfNCAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMS40IEVuYWJsZSBhcHAgdXBkYXRlIGluc3RhbGxzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjQgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQoJZmkKZmkKCgojIDEuNSBFbmFibGUgc3lzdGVtIGRhdGEgZmlsZXMgYW5kIHNlY3VyaXR5IHVwZGF0ZSBpbnN0YWxscyAKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBTb2Z0d2FyZSBVcGRhdGVzIC0gSW5zdGFsbCBzZWN1cml0eSB1cGRhdGVzIGF1dG9tYXRpY2FsbHkgYW5kIEluc3RhbGwgeFByb3RlY3QsIE1SVCAmIEdhdGVrZWVwZXIgdXBkYXRlcyBhdXRvbWF0aWNhbGx5IChKYW1mIFBybyAtIEF1dG9tYXRpY2FsbHkgaW5zdGFsbCBjb25maWd1cmF0aW9uIGRhdGEgYW5kIEF1dG9tYXRjaWFsbHkgaW5zdGFsbCBzeXN0ZW0gZGF0YSBmaWxlcyBhbmQgc2VjdXJpdHkgdXBkYXRlcykKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQxXzU9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTFfNSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDFfNSIgPSAiMSIgXTsgdGhlbgoJIyBDaGVjayB0byBzZWUgaWYgdGhlIHByZWZlcmVuY2UgYW5kIGtleSBleGlzdC4gSWYgbm90LCB3cml0ZSB0byBhdWRpdCBsb2cuIFByZXN1bWluZzogVW5zZXQgPSBub3Qgc2VjdXJlIHN0YXRlLgoJQ1BfY3JpdGljYWxVcGRhdGVzPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnQ29uZmlnRGF0YUluc3RhbGwgPSAxJykiCglpZiBbWyAiJENQX2NyaXRpY2FsVXBkYXRlcyIgLWd0ICIwIiBdXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjUgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzUgLWJvb2wgZmFsc2U7IGVsc2UKCQljcml0aWNhbFVwZGF0ZXM9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLlNvZnR3YXJlVXBkYXRlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnQ29uZmlnRGF0YUluc3RhbGwgPSAxJykiCgkJaWYgW1sgIiRjcml0aWNhbFVwZGF0ZXMiIC1ndCAiMCIgXV07IHRoZW4KCQkJZWNobyAiJChkYXRlIC11KSIgIjEuNSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzUgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAxLjUgRW5hYmxlIHN5c3RlbSBkYXRhIGZpbGVzIGFuZCBzZWN1cml0eSB1cGRhdGUgaW5zdGFsbHMiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjUgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJZmkKCWZpCmZpCgojIDEuNiBFbmFibGUgT1MgWCB1cGRhdGUgaW5zdGFsbHMgCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gU29mdHdhcmUgVXBkYXRlcyAtIEF1dG9tYXRpY2FsbHkgaW5zdGFsbCBtYWNPUyB1cGRhdGVzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0MV82PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUxXzYpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQxXzYiID0gIjEiIF07IHRoZW4KCXVwZGF0ZVJlc3RhcnQ9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLlNvZnR3YXJlVXBkYXRlIEF1dG9tYXRpY2FsbHlJbnN0YWxsTWFjT1NVcGRhdGVzKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJHVwZGF0ZVJlc3RhcnQiID0gIjEiIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiMS42IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMV82IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAxLjYgRW5hYmxlIE9TIFggdXBkYXRlIGluc3RhbGxzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIxLjYgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyAyLjEuMSBUdXJuIG9mZiBCbHVldG9vdGgsIGlmIG5vIHBhaXJlZCBkZXZpY2VzIGV4aXN0CiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml8xXzE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMV8xKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml8xXzEiID0gIjEiIF07IHRoZW4KCWJ0UG93ZXJTdGF0ZT0iJCgkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUuQmx1ZXRvb3RoIENvbnRyb2xsZXJQb3dlclN0YXRlKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGJ0UG93ZXJTdGF0ZSIgPSAiMCIgXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjEuMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMV8xIC1ib29sIGZhbHNlOyBlbHNlCgkJY29ubmVjdGFibGU9IiQoc3lzdGVtX3Byb2ZpbGVyIFNQQmx1ZXRvb3RoRGF0YVR5cGUgMj4mMXwgZ3JlcCBDb25uZWN0YWJsZSB8IGF3ayAne3ByaW50ICQyfScgfCBoZWFkIC0xKSIKCQlpZiBbWyAiJGNvbm5lY3RhYmxlIiAhPSAiWWVzIiBdXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4xLjEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl8xXzEgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAyLjEuMSBUdXJuIG9mZiBCbHVldG9vdGgsIGlmIG5vIHBhaXJlZCBkZXZpY2VzIGV4aXN0IiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4xLjEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJZmkKCWZpCmZpCgojIDIuMS4yIFNob3cgQmx1ZXRvb3RoIHN0YXR1cyBpbiBtZW51IGJhcgojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfMV8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzFfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfMV8yIiA9ICIxIiBdOyB0aGVuCiAgICBidE1lbnVCYXI9IiQocHl0aG9uIC1jICdmcm9tIENvcmVGb3VuZGF0aW9uIGltcG9ydCBDRlByZWZlcmVuY2VzQ29weUFwcFZhbHVlOyBwcmludCBDRlByZWZlcmVuY2VzQ29weUFwcFZhbHVlKCJCbHVldG9vdGgiLCAiY29tLmFwcGxlLmNvbnRyb2xjZW50ZXIucGxpc3QiKScpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbICIkYnRNZW51QmFyIiA9ICIxOCIgXTsgdGhlbgoJCWVjaG8gIiogMi4xLjIgU2hvdyBCbHVldG9vdGggc3RhdHVzIGluIG1lbnUgYmFyIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjEuMiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiMi4xLjIgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzFfMiAtYm9vbCBmYWxzZQoJZmkKZmkKCiMjIyAyLjIuMSBFbmFibGUgIlNldCB0aW1lIGFuZCBkYXRlIGF1dG9tYXRpY2FsbHkiIChOb3QgU2NvcmVkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfMl8xPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzJfMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfMl8xIiA9ICIxIiBdOyB0aGVuCglTZXRUaW1lQW5kRGF0ZUF1dG9tYXRpY2FsbHk9IiQoc3lzdGVtc2V0dXAgLWdldHVzaW5nbmV0d29ya3RpbWUgfCBhd2sgJ3twcmludCAkM30nKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJFNldFRpbWVBbmREYXRlQXV0b21hdGljYWxseSIgPSAiT24iIF07IHRoZW4KCSAJZWNobyAiJChkYXRlIC11KSIgIjIuMi4xIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJIAkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMl8xIC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjIuMSBFbmFibGUgU2V0IHRpbWUgYW5kIGRhdGUgYXV0b21hdGljYWxseSIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi4yLjEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyAyLjIuMiBFbnN1cmUgdGltZSBzZXQgaXMgd2l0aGluIGFwcHJvcHJpYXRlIGxpbWl0cwojIE5vdCBhdWRpdGVkIC0gb25seSBlbmZvcmNlZCBpZiBpZGVudGlmaWVkIGFzIHByaW9yaXR5CiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml8yXzI9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMl8yKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKIyBpZiBbICIkQXVkaXQyXzJfMiIgPSAiMSIgXTsgdGhlbgojIHN5bmMgdGltZSAKIyBmaQoKIyAyLjMuMSBTZXQgYW4gaW5hY3Rpdml0eSBpbnRlcnZhbCBvZiAyMCBtaW51dGVzIG9yIGxlc3MgZm9yIHRoZSBzY3JlZW4gc2F2ZXIgCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gTG9naW5XaW5kb3cgcGF5bG9hZCA+IE9wdGlvbnMgPiBTdGFydCBzY3JlZW4gc2F2ZXIgYWZ0ZXI6IDIwIE1pbnV0ZXMgb2YgSW5hY3Rpdml0eQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfM18xPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzNfMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfM18xIiA9ICIxIiBdOyB0aGVuCglDUF9zY3JlZW5TYXZlclRpbWU9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIGlkbGVUaW1lIHwgYXdrICd7cHJpbnQgJDMtMH0nKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9zY3JlZW5TYXZlclRpbWUiIC1sZSAiMTIwMCIgXV0gJiYgW1sgIiRDUF9zY3JlZW5TYXZlclRpbWUiICE9ICIiIF1dOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuMy4xIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl8zXzEgLWJvb2wgZmFsc2U7IGVsc2UKCQlzY3JlZW5TYXZlclRpbWU9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvQnlIb3N0L2NvbS5hcHBsZS5zY3JlZW5zYXZlci4iJGhhcmR3YXJlVVVJRCIucGxpc3QgaWRsZVRpbWUpIgoJCWlmIFtbICIkc2NyZWVuU2F2ZXJUaW1lIiAtbGUgIjEyMDAiIF1dICYmIFtbICIkc2NyZWVuU2F2ZXJUaW1lIiAhPSAiIiBdXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4zLjEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl8zXzEgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAyLjMuMSBTZXQgYW4gaW5hY3Rpdml0eSBpbnRlcnZhbCBvZiAyMCBtaW51dGVzIG9yIGxlc3MgZm9yIHRoZSBzY3JlZW4gc2F2ZXIiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjMuMSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZmkKZmkKCiMgMi4zLjIgU2VjdXJlIHNjcmVlbiBzYXZlciBjb3JuZXJzIAojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIEN1c3RvbSBwYXlsb2FkID4gY29tLmFwcGxlLmRvY2sgPiB3dm91cy10bC1jb3JuZXI9MCwgd3ZvdXMtYnItY29ybmVyPTUsIHd2b3VzLWJsLWNvcm5lcj0wLCB3dm91cy10ci1jb3JuZXI9MAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfM18yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzNfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfM18yIiA9ICIxIiBdOyB0aGVuCglDUF9jb3JuZXI9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1FICcoXCJ3dm91cy1ibC1jb3JuZXJcIiA9fFwid3ZvdXMtdGwtY29ybmVyXCIgPXxcInd2b3VzLXRyLWNvcm5lclwiID18XCJ3dm91cy1ici1jb3JuZXJcIiA9KScpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX2Nvcm5lciIgIT0gKiI2IiogXV0gJiYgW1sgIiRDUF9jb3JuZXIiICE9ICIiIF1dOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuMy4yIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl8zXzIgLWJvb2wgZmFsc2U7IGVsc2UKCQlibF9jb3JuZXI9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmRvY2sgd3ZvdXMtYmwtY29ybmVyKSIKCQl0bF9jb3JuZXI9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmRvY2sgd3ZvdXMtdGwtY29ybmVyKSIKCQl0cl9jb3JuZXI9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmRvY2sgd3ZvdXMtdHItY29ybmVyKSIKCQlicl9jb3JuZXI9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmRvY2sgd3ZvdXMtYnItY29ybmVyKSIKCQlpZiBbWyAiJGJsX2Nvcm5lciIgIT0gIjYiIF1dICYmIFtbICIkdGxfY29ybmVyIiAhPSAiNiIgXV0gJiYgW1sgIiR0cl9jb3JuZXIiICE9ICI2IiBdXSAmJiBbWyAiJGJyX2Nvcm5lciIgIT0gIjYiIF1dOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjMuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzNfMiAtYm9vbCBmYWxzZTsgZWxzZQoJCQllY2hvICIqIDIuMy4yIFNlY3VyZSBzY3JlZW4gc2F2ZXIgY29ybmVycyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJZWNobyAiJChkYXRlIC11KSIgIjIuMy4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWZpCglmaQpmaQoKIyAyLjMuMyBGYW1pbGlhcml6ZSB1c2VycyB3aXRoIHNjcmVlbiBsb2NrIHRvb2xzIG9yIGNvcm5lciB0byBTdGFydCBTY3JlZW4gU2F2ZXIgCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gQ3VzdG9tIHBheWxvYWQgPiBjb20uYXBwbGUuZG9jayA+IHd2b3VzLXRsLWNvcm5lcj0wLCB3dm91cy1ici1jb3JuZXI9NSwgd3ZvdXMtYmwtY29ybmVyPTAsIHd2b3VzLXRyLWNvcm5lcj0wCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml8zXzM9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfM18zKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml8zXzMiID0gIjEiIF07IHRoZW4KCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJQ1BfY29ybmVyPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtRSAnKFwid3ZvdXMtYmwtY29ybmVyXCIgPXxcInd2b3VzLXRsLWNvcm5lclwiID18XCJ3dm91cy10ci1jb3JuZXJcIiA9fFwid3ZvdXMtYnItY29ybmVyXCIgPSknKSIKCWlmIFtbICIkQ1BfY29ybmVyIiA9ICoiNSIqIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjMuNCBwYXNzZWQgY3AiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfM18zIC1ib29sIGZhbHNlOyBlbHNlCgkJYmxfY29ybmVyPSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5kb2NrIHd2b3VzLWJsLWNvcm5lcikiCgkJdGxfY29ybmVyPSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5kb2NrIHd2b3VzLXRsLWNvcm5lcikiCgkJdHJfY29ybmVyPSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5kb2NrIHd2b3VzLXRyLWNvcm5lcikiCgkJYnJfY29ybmVyPSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5kb2NrIHd2b3VzLWJyLWNvcm5lcikiCgkJaWYgWyAiJGJsX2Nvcm5lciIgPSAiNSIgXSB8fCBbICIkdGxfY29ybmVyIiA9ICI1IiBdIHx8IFsgIiR0cl9jb3JuZXIiID0gIjUiIF0gfHwgWyAiJGJyX2Nvcm5lciIgPSAiNSIgXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4zLjMgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl8zXzMgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAyLjMuMyBGYW1pbGlhcml6ZSB1c2VycyB3aXRoIHNjcmVlbiBsb2NrIHRvb2xzIG9yIGNvcm5lciB0byBTdGFydCBTY3JlZW4gU2F2ZXIiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjMuMyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZmkKZmkKCgojIDIuNC4xIERpc2FibGUgUmVtb3RlIEFwcGxlIEV2ZW50cyAKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzRfMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzEpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzRfMSIgPSAiMSIgXTsgdGhlbgoJcmVtb3RlQXBwbGVFdmVudHM9IiQoc3lzdGVtc2V0dXAgLWdldHJlbW90ZWFwcGxlZXZlbnRzIHwgYXdrICd7cHJpbnQgJDR9JykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRyZW1vdGVBcHBsZUV2ZW50cyIgPSAiT2ZmIiBdOyB0aGVuCgkgCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCSAJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfMSAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMi40LjEgRGlzYWJsZSBSZW1vdGUgQXBwbGUgRXZlbnRzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuMSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDIuNC4yIERpc2FibGUgSW50ZXJuZXQgU2hhcmluZyAKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzRfMj0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzIpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAojIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKaWYgWyAiJEF1ZGl0Ml80XzIiID0gIjEiIF07IHRoZW4KCWlmIFsgLWUgL0xpYnJhcnkvUHJlZmVyZW5jZXMvU3lzdGVtQ29uZmlndXJhdGlvbi9jb20uYXBwbGUubmF0LnBsaXN0IF07IHRoZW4KCQluYXRBaXJwb3J0PSIkKC91c3IvbGliZXhlYy9QbGlzdEJ1ZGR5IC1jICJwcmludCA6TkFUOkFpclBvcnQ6RW5hYmxlZCIgL0xpYnJhcnkvUHJlZmVyZW5jZXMvU3lzdGVtQ29uZmlndXJhdGlvbi9jb20uYXBwbGUubmF0LnBsaXN0KSIKCQluYXRFbmFibGVkPSIkKC91c3IvbGliZXhlYy9QbGlzdEJ1ZGR5IC1jICJwcmludCA6TkFUOkVuYWJsZWQiIC9MaWJyYXJ5L1ByZWZlcmVuY2VzL1N5c3RlbUNvbmZpZ3VyYXRpb24vY29tLmFwcGxlLm5hdC5wbGlzdCkiCgkJbmF0UHJpbWFyeT0iJCgvdXNyL2xpYmV4ZWMvUGxpc3RCdWRkeSAtYyAicHJpbnQgOk5BVDpQcmltYXJ5SW50ZXJmYWNlOkVuYWJsZWQiIC9MaWJyYXJ5L1ByZWZlcmVuY2VzL1N5c3RlbUNvbmZpZ3VyYXRpb24vY29tLmFwcGxlLm5hdC5wbGlzdCkiCiAgICAgICAgZm9yd2FyZGluZz0iJChzeXNjdGwgbmV0LmluZXQuaXAuZm9yd2FyZGluZyB8IGF3ayAneyBwcmludCAkTkYgfScpIgoJCWlmIFsgIiRuYXRBaXJwb3J0IiA9ICJ0cnVlIiBdIHx8IFsgIiRuYXRFbmFibGVkIiA9ICJ0cnVlIiBdIHx8IFsgIiRuYXRQcmltYXJ5IiA9ICJ0cnVlIiBdIHx8IFsgIiRmb3J3YXJkaW5nIiA9ICIxIiBdOyB0aGVuCgkJCWVjaG8gIiogMi40LjIgRGlzYWJsZSBJbnRlcm5ldCBTaGFyaW5nIiAgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJZWNobyAiJChkYXRlIC11KSIgIjIuNC4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgogICAgICAgIGVsc2UKCQkJZWNobyAiJChkYXRlIC11KSIgIjIuNC4yIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF8yIC1ib29sIGZhbHNlCgkJZmkKICAgIGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjIgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfMiAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgMi40LjMgRGlzYWJsZSBTY3JlZW4gU2hhcmluZyAKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzRfMz0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzRfMyIgPSAiMSIgXTsgdGhlbgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglzY3JlZW5TaGFyaW5nPSIkKGxhdW5jaGN0bCBsaXN0IHwgZWdyZXAgLWMgc2NyZWVuc2hhcmluZykiCglpZiBbICIkc2NyZWVuU2hhcmluZyIgLWd0IDAgXTsgdGhlbgoJCWVjaG8gIiogMi40LjMgRGlzYWJsZSBTY3JlZW4gU2hhcmluZyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjMgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkgCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuMyBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCSAJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfMyAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgMi40LjQgRGlzYWJsZSBQcmludGVyIFNoYXJpbmcgCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml80XzQ9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF80KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml80XzQiID0gIjEiIF07IHRoZW4KCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJcHJpbnRlclNoYXJpbmc9IiQoL3Vzci9zYmluL2N1cHNjdGwgfCBncmVwIC1jICJzaGFyZV9wcmludGVycz0wIikiCglpZiBbICIkcHJpbnRlclNoYXJpbmciICE9ICIwIiBdOyB0aGVuCgkgCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuNCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCSAJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfNCAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMi40LjQgRGlzYWJsZSBQcmludGVyIFNoYXJpbmciID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNC40IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMi40LjUgRGlzYWJsZSBSZW1vdGUgTG9naW4gCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml80XzU9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF81KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml80XzUiID0gIjEiIF07IHRoZW4KCXJlbW90ZUxvZ2luPSIkKC91c3Ivc2Jpbi9zeXN0ZW1zZXR1cCAtZ2V0cmVtb3RlbG9naW4gfCBhd2sgJ3twcmludCAkM30nKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJHJlbW90ZUxvZ2luIiA9ICJPZmYiIF07IHRoZW4KCSAJZWNobyAiJChkYXRlIC11KSIgIjIuNC41IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJIAkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF81IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjQuNSBEaXNhYmxlIFJlbW90ZSBMb2dpbiIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjUgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyAyLjQuNiBEaXNhYmxlIERWRCBvciBDRCBTaGFyaW5nIAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNF82PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfNikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNF82IiA9ICIxIiBdOyB0aGVuCglkaXNjU2hhcmluZz0iJChsYXVuY2hjdGwgbGlzdCB8IGVncmVwIE9EU0FnZW50KSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGRpc2NTaGFyaW5nIiA9ICIiIF07IHRoZW4KCSAJZWNobyAiJChkYXRlIC11KSIgIjIuNC42IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJIAkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF82IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjQuNiBEaXNhYmxlIERWRCBvciBDRCBTaGFyaW5nIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuNiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDIuNC43IERpc2FibGUgQmx1ZXRvb3RoIFNoYXJpbmcKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzRfNz0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzcpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudCBhbmQgdXNlcgppZiBbICIkQXVkaXQyXzRfNyIgPSAiMSIgXTsgdGhlbgoJYnRTaGFyaW5nPSIkKC91c3IvbGliZXhlYy9QbGlzdEJ1ZGR5IC1jICJwcmludCA6UHJlZktleVNlcnZpY2VzRW5hYmxlZCIgIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL0J5SG9zdC9jb20uYXBwbGUuQmx1ZXRvb3RoLiIkaGFyZHdhcmVVVUlEIi5wbGlzdCkiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRidFNoYXJpbmciID0gInRydWUiIF07IHRoZW4KCQllY2hvICIqIDIuNC43IERpc2FibGUgQmx1ZXRvb3RoIFNoYXJpbmciID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNC43IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJIAllY2hvICIkKGRhdGUgLXUpIiAiMi40LjcgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkgCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzcgLWJvb2wgZmFsc2UKCWZpCmZpCgojIDIuNC44IERpc2FibGUgRmlsZSBTaGFyaW5nCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml80Xzg9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF84KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml80XzgiID0gIjEiIF07IHRoZW4KCWFmcEVuYWJsZWQ9IiQobGF1bmNoY3RsIGxpc3QgfCBlZ3JlcCBBcHBsZUZpbGVTZXJ2ZXIpIgoJc21iRW5hYmxlZD0iJChsYXVuY2hjdGwgbGlzdCB8IGVncmVwIHNtYmQpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbICIkYWZwRW5hYmxlZCIgPSAiIiBdICYmIFsgIiRzbWJFbmFibGVkIiA9ICIiIF07IHRoZW4KIAkJZWNobyAiJChkYXRlIC11KSIgIjIuNC44IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgogCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF84IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjQuOCBEaXNhYmxlIEZpbGUgU2hhcmluZyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjggZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyAyLjQuOSBEaXNhYmxlIFJlbW90ZSBNYW5hZ2VtZW50CiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml80Xzk9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF85KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml80XzkiID0gIjEiIF07IHRoZW4KCXJlbW90ZU1hbmFnZW1lbnQ9IiQocHMgLWVmIHwgZWdyZXAgQVJEQWdlbnQgfCBncmVwIC1jICIvU3lzdGVtL0xpYnJhcnkvQ29yZVNlcnZpY2VzL1JlbW90ZU1hbmFnZW1lbnQvQVJEQWdlbnQuYXBwL0NvbnRlbnRzL01hY09TL0FSREFnZW50IikiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRyZW1vdGVNYW5hZ2VtZW50IiA9ICIxIiBdOyB0aGVuCiAJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuOSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKIAkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfOSAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogMi40LjkgRGlzYWJsZSBSZW1vdGUgTWFuYWdlbWVudCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjkgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyAyLjQuMTAgRGlzYWJsZSBDb250ZW50IENhY2hpbmcKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzRfMTA9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNF8xMCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNF8xMCIgPSAiMSIgXTsgdGhlbgoJY29udGVudENhY2hlU3RhdHVzPSIkKC91c3IvYmluL0Fzc2V0Q2FjaGVNYW5hZ2VyVXRpbCBzdGF0dXMgMj4mMSB8IGdyZXAgLWMgIkFjdGl2YXRlZDogZmFsc2UiKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGNvbnRlbnRDYWNoZVN0YXR1cyIgPT0gMSBdOyB0aGVuCiAJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuMTAgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCiAJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzEwIC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjQuMTAgRGlzYWJsZSBEaXNhYmxlIENvbnRlbnQgQ2FjaGluZyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjEwIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMi40LjExIERpc2FibGUgTWVkaWEgU2hhcmluZwojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNF8xMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzExKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml80XzExIiA9ICIxIiBdOyB0aGVuCgltZWRpYVNoYXJpbmdTdGF0dXNIb21lPSQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmFtcC5tZWRpYXNoYXJpbmdkLnBsaXN0IGhvbWUtc2hhcmluZy1lbmFibGVkKQoJbWVkaWFTaGFyaW5nU3RhdHVzUHVibGljPSQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmFtcC5tZWRpYXNoYXJpbmdkLnBsaXN0IHB1YmxpYy1zaGFyaW5nLWVuYWJsZWQpCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRtZWRpYVNoYXJpbmdTdGF0dXNIb21lIiA9PSAwIF0gJiYgWyAiJG1lZGlhU2hhcmluZ1N0YXR1c1B1YmxpYyIgPT0gMCBdOyB0aGVuCiAJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjQuMTEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCiAJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl80XzExIC1ib29sIGZhbHNlCgkJZWxpZiBbICIkbWVkaWFTaGFyaW5nU3RhdHVzSG9tZSIgPSAiIiBdICYmIFsgIiRtZWRpYVNoYXJpbmdTdGF0dXNQdWJsaWMiID0gIiIgXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjExIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkgJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzRfMTEgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDIuNC4xMSBEaXNhYmxlIERpc2FibGUgTWVkaWEgU2hhcmluZyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi40LjExIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCgojIDIuNS4xLjEgRW5hYmxlIEZpbGVWYXVsdCAKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKIyBBdWRpdCBvbmx5LiAgRG9lcyBub3QgcmVtZWRpYXRlCkF1ZGl0Ml81XzFfMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzFfMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNV8xXzEiID0gIjEiIF07IHRoZW4KCWZpbGV2YXVsdEVuYWJsZWQ9IiQoZmRlc2V0dXAgc3RhdHVzIHwgYXdrICd7cHJpbnQgJDN9JykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRmaWxldmF1bHRFbmFibGVkIiA9ICJPZmYuIiBdOyB0aGVuCgkJZWNobyAiKiAyLjUuMS4xIEVuYWJsZSBGaWxlVmF1bHQiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4xLjEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4xLjEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMV8xIC1ib29sIGZhbHNlCQoJZmkKZmkKCiMgMi41LjEuMiBFbnN1cmUgYWxsIHVzZXIgc3RvcmFnZSBBUEZTIFZvbHVtZXMgYXJlIGVuY3J5cHRlZAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQojIEF1ZGl0IG9ubHkuICBEb2VzIG5vdCByZW1lZGlhdGUKQXVkaXQyXzVfMV8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMV8yKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml81XzFfMiIgPSAiMSIgXTsgdGhlbgoJYXBmc3llcz0iJChkaXNrdXRpbCBhcCBsaXN0KSIKCWlmIFsgIiRhcGZzeWVzIiAhPSAiTm8gQVBGUyBDb250YWluZXJzIGZvdW5kIiBdOyB0aGVuCgkJRFVJTkZPPSQoZGlza3V0aWwgaW5mbyAvKQoJCUxWX1VVSUQ9JChlY2hvICIkRFVJTkZPIiB8IGF3ayAnL1wvIFBhcnRpdGlvbiBVVUlELyB7cHJpbnQgJDU7ZXhpdH0nKQoJCQkJCSMgR2V0IHRoZSBBUEZTIENvbnRhaW5lciBJRCBmb3IgdGhlIGJvb3QgZHJpdmUncyBBUEZTIHZvbHVtZS4KCQkJCQlDT05UQUlORVJfSUQ9JChlY2hvICIkRFVJTkZPIiB8IGF3ayAnL1BhcnQgb2YgV2hvbGUvIHtwcmludCAkNDtleGl0fScpCgkJCQkJQVBGU0lORk89JChkaXNrdXRpbCBhcCBsaXN0ICIkQ09OVEFJTkVSX0lEIikKCQkJCQlBUFZPTElORk89JChlY2hvICIkQVBGU0lORk8iIHwgZ3JlcCAtQTcgIiRMVl9VVUlEIikKCQkJCQlFTkNSWVBUSU9OPSQoZWNobyAiJEFQVk9MSU5GTyIgfCBhd2sgJy9GaWxlVmF1bHQvIHtwcmludCAkMztleGl0fScpCgkJCQkJaWYgWyAiJEVOQ1JZUFRJT04iICE9ICJZZXMiIF07IHRoZW4KCQkJCQkJZWNobyAiKiAyLjUuMS4yIEVuc3VyZSBhbGwgdXNlciBzdG9yYWdlIEFQRlMgVm9sdW1lcyBhcmUgZW5jcnlwdGVkIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQkJCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjEuMiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UgCgkJCQkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMS4yIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV8xXzIgLWJvb2wgZmFsc2UJCgkJCQkJCWZpCgkJCQkJZWxzZSAKCQkJCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjEuMiBub3QgYXBwbGljYWJsZSwgQ29yZVN0b3JhZ2Ugc3RvcmFnZSBlbmFibGVkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCQkJZmkKCQkJCWZpCgoJCgojIDIuNS4xLjMgRW5zdXJlIGFsbCB1c2VyIHN0b3JhZ2UgQ29yZVN0b3JhZ2UgVm9sdW1lcyBhcmUgZW5jcnlwdGVkCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCiMgQXVkaXQgb25seS4gIERvZXMgbm90IHJlbWVkaWF0ZQpBdWRpdDJfNV8xXzM9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV8xXzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzVfMV8zIiA9ICIxIiBdOyB0aGVuCglhcGZzeWVzPSIkKGRpc2t1dGlsIGFwIGxpc3QpIgoJaWYgWyAiJGFwZnN5ZXMiID09ICJObyBBUEZTIENvbnRhaW5lcnMgZm91bmQiIF07IHRoZW4KCQkjIGdldCBMb2dpY2FsIFZvbHVtZSBGYW1pbHkKCQlMRlY9IiQoZGlza3V0aWwgY3MgbGlzdCB8IGdyZXAgIkxvZ2ljYWwgVm9sdW1lIEZhbWlseSIgfCBhd2sgJy9Mb2dpY2FsIFZvbHVtZSBGYW1pbHkvIHtwcmludCAkNX0nKSIKCQkjIENoZWNrIGVuY3J5cHRpb24gc3RhdHVzIGlzIGNvbXBsZXRlCgkJRW5jcnlwdFN0YXR1cz0iJCggZGlza3V0aWwgY3MgIiRMRlYiIHwgYXdrICcvQ29udmVyc2lvbiBTdGF0dXMvIHtwcmludCAkM30nKSIKCQlpZiBbICIkRW5jcnlwdFN0YXR1cyIgIT0gIkNvbXBsZXRlIiBdOyB0aGVuCgkJZWNobyAiKiAyLjUuMS4zIEVuc3VyZSBhbGwgdXNlciBDb3JlU3RvcmFnZSB2b2x1bWVzIGVuY3J5cHRlZCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjEuMyBmaXgiIHwgdGVlIC1hICIkbG9nZmlsZSI7IGVsc2UgCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4xLjMgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMV8zIC1ib29sIGZhbHNlCQoJCWZpCgllbHNlIAoJZWNobyAiJChkYXRlIC11KSIgIjIuNS4xLjMgbm90IGFwcGxpY2FibGUsIEFQRlMgc3RvcmFnZSBlbmFibGVkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoJCgojIDIuNS4yLjEgRW5hYmxlIEdhdGVrZWVwZXIgCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gU2VjdXJpdHkgYW5kIFByaXZhY3kgcGF5bG9hZCA+IEdlbmVyYWwgPiBHYXRla2VlcGVyID4gTWFjIEFwcCBTdG9yZSBhbmQgaWRlbnRpZmllZCBkZXZlbG9wZXJzIChzZWxlY3RlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzVfMl8xPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMl8xKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml81XzJfMSIgPSAiMSIgXTsgdGhlbgoJQ1BfZ2F0ZWtlZXBlckVuYWJsZWQ9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICdFbmFibGVBc3Nlc3NtZW50ID0gMScpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX2dhdGVrZWVwZXJFbmFibGVkIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMi4xIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzJfMSAtYm9vbCBmYWxzZTsgZWxzZQoJCWdhdGVrZWVwZXJFbmFibGVkPSIkKHNwY3RsIC0tc3RhdHVzIHwgZ3JlcCAtYyAiYXNzZXNzbWVudHMgZW5hYmxlZCIpIgoJCWlmIFsgIiRnYXRla2VlcGVyRW5hYmxlZCIgPSAiMSIgXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjIuMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMl8xIC1ib29sIGZhbHNlOyBlbHNlCgkJCWVjaG8gIiogMi41LjIuMSBFbmFibGUgR2F0ZWtlZXBlciIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4yLjEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJZmkKCWZpCmZpCgojIDIuNS4yLjIgRW5hYmxlIEZpcmV3YWxsIAojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIFNlY3VyaXR5IGFuZCBQcml2YWN5IHBheWxvYWQgPiBGaXJld2FsbCA+IEVuYWJsZSBGaXJld2FsbCAoY2hlY2tlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzVfMl8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMl8yKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml81XzJfMiIgPSAiMSIgXTsgdGhlbgoJQ1BfZmlyZXdhbGxFbmFibGVkPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnRW5hYmxlRmlyZXdhbGwgPSAxJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1BfZmlyZXdhbGxFbmFibGVkIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMi4yIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzJfMiAtYm9vbCBmYWxzZTsgZWxzZQoJCWZpcmV3YWxsRW5hYmxlZD0iJCgkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUuYWxmIGdsb2JhbHN0YXRlKSIKCQlpZiBbICIkZmlyZXdhbGxFbmFibGVkIiA9ICIwIiBdOyB0aGVuCgkJCWVjaG8gIiogMi41LjIuMiBFbmFibGUgRmlyZXdhbGwiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMi4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjIuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMl8yIC1ib29sIGZhbHNlCgkJZmkKCWZpCmZpCgojIDIuNS4yLjMgRW5hYmxlIEZpcmV3YWxsIFN0ZWFsdGggTW9kZSAKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBTZWN1cml0eSBhbmQgUHJpdmFjeSBwYXlsb2FkID4gRmlyZXdhbGwgPiBFbmFibGUgc3RlYWx0aCBtb2RlIChjaGVja2VkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNV8yXzM9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV8yXzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzVfMl8zIiA9ICIxIiBdOyB0aGVuCglDUF9zdGVhbHRoRW5hYmxlZD0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ0VuYWJsZVN0ZWFsdGhNb2RlID0gMScpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX3N0ZWFsdGhFbmFibGVkIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMi4zIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzJfMyAtYm9vbCBmYWxzZTsgZWxzZQoJCXN0ZWFsdGhFbmFibGVkPSIkKC91c3IvbGliZXhlYy9BcHBsaWNhdGlvbkZpcmV3YWxsL3NvY2tldGZpbHRlcmZ3IC0tZ2V0c3RlYWx0aG1vZGUgfCBhd2sgJ3twcmludCAkM30nKSIKCQlpZiBbICIkc3RlYWx0aEVuYWJsZWQiID0gImVuYWJsZWQiIF07IHRoZW4KCQkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4yLjMgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzJfMyAtYm9vbCBmYWxzZTsgZWxzZQoJCQllY2hvICIqIDIuNS4yLjMgRW5hYmxlIEZpcmV3YWxsIFN0ZWFsdGggTW9kZSIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJZWNobyAiJChkYXRlIC11KSIgIjIuNS4yLjMgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJZmkKCWZpCmZpCgojIDIuNS4zIEVuYWJsZSBMb2NhdGlvbiBTZXJ2aWNlcwojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNV8zPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfMykiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CiMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIHJlbWVkaWF0ZQppZiBbICIkQXVkaXQyXzVfMyIgPSAiMSIgXTsgdGhlbgogICAgICAgYXVkaXRkRW5hYmxlZD0kKGxhdW5jaGN0bCBwcmludC1kaXNhYmxlZCBzeXN0ZW0gfCBncmVwIC1jICciY29tLmFwcGxlLmxvY2F0aW9uZCIgPT4gdHJ1ZScpCiAgICAgICBpZiBbICIkYXVkaXRkRW5hYmxlZCIgPSAiMCIgXTsgdGhlbgogICAgICAgICAgIGVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuMyBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKICAgICAgICAgICAkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV8zIC1ib29sIGZhbHNlCiAgICAgICBlbHNlCiAgICAgICAgICAgZWNobyAiKiAyLjUuMyBFbmFibGUgTG9jYXRpb24gU2VydmljZXMiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCiAgICAgICAgICAgZWNobyAiJChkYXRlIC11KSIgIjIuNS4zIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgogICAgICAgZmkKZmkKCiMgMi41LjUgRGlzYWJsZSBzZW5kaW5nIGRpYWdub3N0aWMgYW5kIHVzYWdlIGRhdGEgdG8gQXBwbGUKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzVfNT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl81XzUpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzVfNSIgPSAiMSIgXTsgdGhlbgpDUF9kaXNhYmxlRGlhZ25vc3RpYz0iJChweXRob24gLWMgJ2Zyb20gQ29yZUZvdW5kYXRpb24gaW1wb3J0IENGUHJlZmVyZW5jZXNDb3B5QXBwVmFsdWU7IHByaW50IENGUHJlZmVyZW5jZXNDb3B5QXBwVmFsdWUoIkF1dG9TdWJtaXQiLCAiY29tLmFwcGxlLlN1Ym1pdERpYWdJbmZvIiknKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9kaXNhYmxlRGlhZ25vc3RpYyIgPT0gIkZhbHNlIiBdXSA7IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjUgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfNSAtYm9vbCBmYWxzZTsgZWxzZQoJQXBwbGVEaWFnbj0kKCREZWZhdWx0cyByZWFkIC9MaWJyYXJ5L0FwcGxpY2F0aW9uXCBTdXBwb3J0L0NyYXNoUmVwb3J0ZXIvRGlhZ25vc3RpY01lc3NhZ2VzSGlzdG9yeS5wbGlzdCBBdXRvU3VibWl0KQoJaWYgWyAiJEFwcGxlRGlhZ24iID09IDEgXTsgdGhlbiAKCQkvYmluL2VjaG8gIiogMi41LjUgRGlzYWJsZSBzZW5kaW5nIGRpYWdub3N0aWMgYW5kIHVzYWdlIGRhdGEgdG8gQXBwbGUiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNS41IGZpeCBEaXNhYmxlIHNlbmRpbmcgZGlhZ25vc3RpYyBhbmQgdXNhZ2UgZGF0YSB0byBBcHBsZSIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuNSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV81IC1ib29sIGZhbHNlCgkJZmkKCWZpCmZpCgojIDIuNS42IExpbWl0IEFkIHRyYWNraW5nIGFuZCBwZXJzb25hbGl6ZWQgQWRzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml81XzY9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNV82KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml81XzYiID0gIjEiIF07IHRoZW4KCWlmIFsgIiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLkFkTGliLnBsaXN0IGFsbG93QXBwbGVQZXJzb25hbGl6ZWRBZHZlcnRpc2luZykiID0gIjAiIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiMi41LjYgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzVfNiAtYm9vbCBmYWxzZQoJZWxzZQoJCWVjaG8gIiogMi41LjYgUmV2aWV3IExpbWl0IEFkIHRyYWNraW5nIGFuZCBwZXJzb25hbGl6ZWQgQWRzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjUuNiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDIuNi4xIGlDbG91ZCBjb25maWd1cmF0aW9uIChDaGVjayBmb3IgaUNsb3VkIGFjY291bnRzKSAoTm90IFNjb3JlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzZfMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl82XzEpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzZfMSIgPSAiMSIgXTsgdGhlbgoJb3ZlcjUwMD0kKCAvdXNyL2Jpbi9kc2NsIC4gbGlzdCAvVXNlcnMgVW5pcXVlSUQgfCAvdXNyL2Jpbi9hd2sgJyQyID4gNTAwIHsgcHJpbnQgJDEgfScgKQoJZm9yIEVhY2hVc2VyIGluICRvdmVyNTAwIDsKCWRvCgkJVXNlckhvbWVEaXJlY3Rvcnk9JCgvdXNyL2Jpbi9kc2NsIC4gLXJlYWQgL1VzZXJzLyIkRWFjaFVzZXIiIE5GU0hvbWVEaXJlY3RvcnkgfCAvdXNyL2Jpbi9hd2sgJ3twcmludCAkMn0nKQoJCUNoZWNrRm9yaUNsb3VkQWNjb3VudD0iJCgkRGVmYXVsdHMgcmVhZCAiJFVzZXJIb21lRGlyZWN0b3J5L0xpYnJhcnkvUHJlZmVyZW5jZXMvTW9iaWxlTWVBY2NvdW50cyIgQWNjb3VudHMgfCAvdXNyL2Jpbi9ncmVwIC1jICdBY2NvdW50RGVzY3JpcHRpb24gPSBpQ2xvdWQnKSIKCQkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCQlpZiBbWyAiJENoZWNrRm9yaUNsb3VkQWNjb3VudCIgLWd0ICIwIiBdXSA7IHRoZW4KCQkJL2Jpbi9lY2hvICIqIDIuNi4xIFVzZXIgaGFzIGFuIGlDbG91ZCBhY2NvdW50IGNvbmZpZ3VyZWQiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjYuMSBmaXggJEVhY2hVc2VyIGlDbG91ZCBhY2NvdW50IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjYuMSBwYXNzZWQgJEVhY2hVc2VyIiAjfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWZpCglkb25lCmZpCgojIDIuNi4yIERpc2FibGUgaUNsb3VkIGtleWNoYWluIChOb3QgU2NvcmVkKSAtIAojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIFJlc3RyaWN0aW9ucyBwYXlsb2FkID4gRnVuY3Rpb25hbGl0eSA+IEFsbG93IGlDbG91ZCBLZXljaGFpbiAodW5jaGVja2VkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNl8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzZfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNl8yIiA9ICIxIiBdOyB0aGVuCglDUF9pQ2xvdWRLZXljaGFpbj0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ2FsbG93Q2xvdWRLZXljaGFpblN5bmMgPSAwJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1BfaUNsb3VkS2V5Y2hhaW4iIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNi4yIHBhc3NlZCBDUCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl82XzIgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDIuNi4yIERpc2FibGUgaUNsb3VkIEtleWNoYWluIHdpdGggY29uZmlndXJhdGlvbiBwcm9maWxlIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjYuMiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDIuNi4zIERpc2FibGUgaUNsb3VkIERyaXZlIChOb3QgU2NvcmVkKQojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIFJlc3RyaWN0aW9ucyBwYXlsb2FkID4gRnVuY3Rpb25hbGl0eSA+IEFsbG93IGlDbG91ZCBEcml2ZSAodW5jaGVja2VkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNl8zPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzZfMykiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNl8zIiA9ICIxIiBdOyB0aGVuCglDUF9pQ2xvdWREcml2ZT0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ2FsbG93Q2xvdWREb2N1bWVudFN5bmMgPSAwJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1BfaUNsb3VkRHJpdmUiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNi4zIHBhc3NlZCBDUCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl82XzMgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDIuNi4zIERpc2FibGUgaUNsb3VkIERyaXZlIHdpdGggY29uZmlndXJhdGlvbiBwcm9maWxlIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjYuMyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDIuNi40IGlDbG91ZCBEcml2ZSBEb2N1bWVudCBzeW5jCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gUmVzdHJpY3Rpb25zIHBheWxvYWQgLSA+IEZ1bmN0aW9uYWxpdHkgPiBBbGxvdyBpQ2xvdWQgRGVza3RvcCAmIERvY3VtZW50cyAodW5jaGVja2VkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfNl80PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzZfNCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfNl80IiA9ICIxIiBdOyB0aGVuCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCUNQX2ljbG91ZERyaXZlRG9jU3luYz0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ2FsbG93Q2xvdWREZXNrdG9wQW5kRG9jdW1lbnRzID0gMCcpIgoJaWYgW1sgIiRDUF9pY2xvdWREcml2ZURvY1N5bmMiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNi40IHBhc3NlZCBDUCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl82XzQgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDIuNi40IERpc2FibGUgaUNsb3VkIERyaXZlIERvY3VtZW50IHN5bmMgd2l0aCBjb25maWd1cmF0aW9uIHByb2ZpbGUiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNi40IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMi42LjUgaUNsb3VkIERyaXZlIERlc2t0b3Agc3luYwojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIFJlc3RyaWN0aW9ucyBwYXlsb2FkIC0gPiBGdW5jdGlvbmFsaXR5ID4gQWxsb3cgaUNsb3VkIERlc2t0b3AgJiBEb2N1bWVudHMgKHVuY2hlY2tlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzZfNT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl82XzUpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzZfNSIgPSAiMSIgXTsgdGhlbgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglDUF9pY2xvdWREcml2ZURvY1N5bmM9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICdhbGxvd0Nsb3VkRGVza3RvcEFuZERvY3VtZW50cyA9IDAnKSIKCWlmIFtbICIkQ1BfaWNsb3VkRHJpdmVEb2NTeW5jIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjYuNSBwYXNzZWQgQ1AiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfNl81IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAyLjYuNSBEaXNhYmxlIGlDbG91ZCBEcml2ZSBEZXNrdG9wIHN5bmMgd2l0aCBjb25maWd1cmF0aW9uIHByb2ZpbGUiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNi41IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMi43LjEgVGltZSBNYWNoaW5lIEF1dG8tQmFja3VwCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml83XzE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfN18xKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Ml83XzEiID0gIjEiIF07IHRoZW4KCXRpbWVNYWNoaW5lQXV0bz0iJCggJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLlRpbWVNYWNoaW5lLnBsaXN0IEF1dG9CYWNrdXAgKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJHRpbWVNYWNoaW5lQXV0byIgIT0gIjEiIF07IHRoZW4KCQllY2hvICIqIDIuNy4xIFRpbWUgTWFjaGluZSBBdXRvLUJhY2t1cCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi43LjEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjIuNy4xIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlMl83XzEgLWJvb2wgZmFsc2UKCWZpCmZpCgojIDIuOCBEaXNhYmxlICJXYWtlIGZvciBuZXR3b3JrIGFjY2VzcyIKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQyXzg9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfOCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDJfOCIgPSAiMSIgXTsgdGhlbgoJQ1Bfd29tcEVuYWJsZWQ9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICciV2FrZSBPbiBMQU4iID0gMCcpIgoJCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJCWlmIFtbICIkQ1Bfd29tcEVuYWJsZWQiID0gIjMiIF1dIDsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi44IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfOCAtYm9vbCBmYWxzZTsgZWxzZQoJCQl3b21wRW5hYmxlZD0iJChwbXNldCAtZyB8IGdyZXAgd29tcCB8IGF3ayAne3ByaW50ICQyfScpIgoJCQlpZiBbICIkd29tcEVuYWJsZWQiID0gIjAiIF07IHRoZW4KCQkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjggcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfOCAtYm9vbCBmYWxzZTsgZWxzZQoJCQkJZWNobyAiKiAyLjggRGlzYWJsZSBXYWtlIGZvciBuZXR3b3JrIGFjY2VzcyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjggZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCWZpCgkJZmkKZmkKCiMgMi45IERpc2FibGUgUG93ZXIgTmFwCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Ml85PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzkpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzkiID0gIjEiIF07IHRoZW4KCW5hcEVuYWJsZWQ9IiQocG1zZXQgLWcgZXZlcnl0aGluZyB8IGdyZXAgLWMgJ3Bvd2VybmFwICAgICAgICAgICAgIDEnKSIKCWlmIFsgIiRuYXBFbmFibGVkIiA9IDAgXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjkgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzkgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDIuOSBEaXNhYmxlIFBvd2VyIE5hcCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMi45IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgMi4xMCBFbmFibGUgU2VjdXJlIEtleWJvYXJkIEVudHJ5IGluIHRlcm1pbmFsLmFwcCAKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBDdXN0b20gcGF5bG9hZCA+IGNvbS5hcHBsZS5UZXJtaW5hbCA+IFNlY3VyZUtleWJvYXJkRW50cnk9dHJ1ZQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfMTA9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMTApIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzEwIiA9ICIxIiBdOyB0aGVuCglDUF9zZWN1cmVLZXlib2FyZD0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ1NlY3VyZUtleWJvYXJkRW50cnkgPSAxJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1Bfc2VjdXJlS2V5Ym9hcmQiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjIuMTAgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzEwIC1ib29sIGZhbHNlOyBlbHNlCgkJc2VjdXJlS2V5Ym9hcmQ9IiQoJERlZmF1bHRzIHJlYWQgL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLlRlcm1pbmFsIFNlY3VyZUtleWJvYXJkRW50cnkpIgoJCWlUZXJtU2VjdXJlPSIkKCREZWZhdWx0cyByZWFkIC1hcHAgaVRlcm0gJ1NlY3VyZSBJbnB1dCcpIgoJCWlmIFsgIiRzZWN1cmVLZXlib2FyZCIgPSAiMSIgXSAmJiBbIiRpVGVybVNlY3VyZSIgLW5lICIwIiBdOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICIyLjEwIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMTAgLWJvb2wgZmFsc2U7IGVsc2UKCQkJZWNobyAiKiAyLjEwIEVuYWJsZSBTZWN1cmUgS2V5Ym9hcmQgRW50cnkgaW4gdGVybWluYWwuYXBwIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4xMCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZmkKZmkKCiMgMi4xMSBFbnN1cmUgRUZJIHZlcnNpb24gaXMgdmFsaWQgYW5kIGJlaW5nIHJlZ3VsYXJseSBjaGVja2VkCiMgQXVkaXQgb25seS4gIFQyIGNoaXAgTWFjcyBkbyBub3QgYWxsb3cgZm9yIHVzZSBvZiBlZmljaGVjawojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDJfMTE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTJfMTEpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQyXzExIiA9ICIxIiBdOyB0aGVuCiMgQ2hlY2sgZm9yIFQyIGNoaXAuICAKaWYgc3lzdGVtX3Byb2ZpbGVyIFNQaUJyaWRnZURhdGFUeXBlIHwgZ3JlcCAnTW9kZWwgTmFtZTonIHwgZ3JlcCAtcSAnVDInOyB0aGVuIAoJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzExIC1ib29sIGZhbHNlCgllY2hvICIkKGRhdGUgLXUpIiAiMi4xMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWVsc2UKCQllZmlTdGF0dXM9IiQoL3Vzci9saWJleGVjL2Zpcm13YXJlY2hlY2tlcnMvZWZpY2hlY2svZWZpY2hlY2sgLS1pbnRlZ3JpdHktY2hlY2sgfCBncmVwIC1jICJObyBjaGFuZ2VzIGRldGVjdGVkIikiCgkJaWYgWyAiJGVmaVN0YXR1cyIgLWd0IDAgXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiMi4xMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUyXzExIC1ib29sIGZhbHNlCgkJCWVsc2UKCQkJCWVjaG8gIiogMi4xMSBFbnN1cmUgRUZJIHZlcnNpb24gaXMgdmFsaWQgYW5kIGJlaW5nIHJlZ3VsYXJseSBjaGVja2VkIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQkJZWNobyAiJChkYXRlIC11KSIgIjIuMTEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCQlmaQpmaQpmaQoKCgojIDMuMSBFbmFibGUgc2VjdXJpdHkgYXVkaXRpbmcKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQzXzE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTNfMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CiMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIHJlbWVkaWF0ZQppZiBbICIkQXVkaXQzXzEiID0gIjEiIF07IHRoZW4KICAgICAgIGF1ZGl0ZEVuYWJsZWQ9JChsYXVuY2hjdGwgbGlzdCB8IGdyZXAgLWMgYXVkaXRkKQogICAgICAgaWYgWyAiJGF1ZGl0ZEVuYWJsZWQiIC1ndCAiMCIgXTsgdGhlbgogICAgICAgICAgIGVjaG8gIiQoZGF0ZSAtdSkiICIzLjEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCiAgICAgICAgICAgJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUzXzEgLWJvb2wgZmFsc2UKICAgICAgIGVsc2UKICAgICAgICAgICBlY2hvICIqIDMuMSBFbmFibGUgc2VjdXJpdHkgYXVkaXRpbmciID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCiAgICAgICAgICAgZWNobyAiJChkYXRlIC11KSIgIjMuMSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKICAgICAgIGZpCmZpCgojIDMuMiBDb25maWd1cmUgU2VjdXJpdHkgQXVkaXRpbmcgRmxhZ3MKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQzXzI9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTNfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDNfMiIgPSAiMSIgXTsgdGhlbgoJYXVkaXRGbGFncz0iJChlZ3JlcCAiXmZsYWdzOiIgL2V0Yy9zZWN1cml0eS9hdWRpdF9jb250cm9sKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgJHthdWRpdEZsYWdzfSAhPSAqImFkIiogXV07dGhlbgoJCWVjaG8gIiogMy4yIENvbmZpZ3VyZSBTZWN1cml0eSBBdWRpdGluZyBGbGFncyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMy4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJCWVjaG8gIiQoZGF0ZSAtdSkiICIzLjIgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUzXzIgLWJvb2wgZmFsc2UKCWZpCmZpCgojIDMuMyBSZXRhaW4gaW5zdGFsbC5sb2cgZm9yIDM2NSBvciBtb3JlIGRheXMgCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0M18zPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUzXzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQzXzMiID0gIjEiIF07IHRoZW4KCWluc3RhbGxSZXRlbnRpb249IiQoZ3JlcCAtaSB0dGwgL2V0Yy9hc2wvY29tLmFwcGxlLmluc3RhbGwgfCBhd2sgLUYndHRsPScgJ3twcmludCAkMn0nKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRpbnN0YWxsUmV0ZW50aW9uIiA9ICIiIF1dIHx8IFtbICIkaW5zdGFsbFJldGVudGlvbiIgLWx0ICIzNjUiIF1dOyB0aGVuCgkJZWNobyAiKiAzLjMgUmV0YWluIGluc3RhbGwubG9nIGZvciAzNjUgb3IgbW9yZSBkYXlzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIzLjMgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjMuMyBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTNfMyAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgMy40IEVuc3VyZSBzZWN1cml0eSBhdWRpdGluZyByZXRlbnRpb24KIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQzXzQ9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTNfNCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDNfNCIgPSAiMSIgXTsgdGhlbgoJYXVkaXRSZXRlbnRpb249IiQoY2F0IC9ldGMvc2VjdXJpdHkvYXVkaXRfY29udHJvbCB8IGVncmVwIGV4cGlyZS1hZnRlcikiCglpZiBbICIkYXVkaXRSZXRlbnRpb24iID0gImV4cGlyZS1hZnRlcjo2MGQgT1IgMUciIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiMy40IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlM180IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiAzLjQgRW5zdXJlIHNlY3VyaXR5IGF1ZGl0aW5nIHJldGVudGlvbiIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMy40IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWZpCglmaQoJCQoKIyAzLjUgQ29udHJvbCBhY2Nlc3MgdG8gYXVkaXQgcmVjb3JkcwojIEF1ZGl0IG9ubHkuICBSZW1lZGlhdGlvbiByZXF1aXJlcyBzeXN0ZW0gaW5zcGVjdGlvbi4KIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQzXzU9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTNfNSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDNfNSIgPSAiMSIgXTsgdGhlbgoJZXRjY2hlY2s9JChscyAtbGUgL2V0Yy9zZWN1cml0eS9hdWRpdF9jb250cm9sIHwgZ3JlcCAtdiAnXC1yLS0tLS0tLS0gIDEgcm9vdCAgd2hlZWwnKQoJdmFyY2hlY2s9JChscyAtbGUgL3Zhci9hdWRpdCB8IGdyZXAgLXYgJ1wtci0tci0tLS0tICAxIHJvb3QgIHdoZWVsXHxjdXJyZW50XHx0b3RhbCcpCglpZiBbWyAiJGV0Y2NoZWNrIiA9ICIiIF1dICYmIFtbICIkdmFyY2hlY2siID0gIiIgXV07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiMy41IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlM181IC1ib29sIGZhbHNlCgllbHNlCgkJZWNobyAiKiAzLjUgQ29udHJvbCBhY2Nlc3MgdG8gYXVkaXQgcmVjb3JkcyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiMy41IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCQoKIyAzLjYgRW5zdXJlIEZpcmV3YWxsIGlzIGNvbmZpZ3VyZWQgdG8gbG9nCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0M182PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUzXzYpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQzXzYiID0gIjEiIF07IHRoZW4KCUZXbG9nPSQoL3Vzci9saWJleGVjL0FwcGxpY2F0aW9uRmlyZXdhbGwvc29ja2V0ZmlsdGVyZncgLS1nZXRsb2dnaW5nbW9kZSB8IHNlZCAtZSAncy9bWzpzcGFjZTpdXSokLy8nKQoJaWYgWyAiJEZXbG9nIiA9ICJMb2cgbW9kZSBpcyBvbiIgXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICIzLjYgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmUzXzYgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDMuNiBFbnN1cmUgRmlyZXdhbGwgaXMgY29uZmlndXJlZCB0byBsb2ciID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjMuNiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDQuMSBEaXNhYmxlIEJvbmpvdXIgYWR2ZXJ0aXNpbmcgc2VydmljZSAKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBDdXN0b20gcGF5bG9hZCA+IGNvbS5hcHBsZS5tRE5TUmVzcG9uZGVyID4gTm9NdWx0aWNhc3RBZHZlcnRpc2VtZW50cz10cnVlCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NF8xPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU0XzEpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ0XzEiID0gIjEiIF07IHRoZW4KICAgIENQX2JvbmpvdXJBZHZlcnRpc2U9IiQoL3Vzci9iaW4vZGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUubUROU1Jlc3BvbmRlci5wbGlzdCBOb011bHRpY2FzdEFkdmVydGlzZW1lbnRzKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9ib25qb3VyQWR2ZXJ0aXNlIiA9PSAiMSIgXV07dGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI0LjEgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU0XzEgLWJvb2wgZmFsc2UKCWVsc2UKCQlib25qb3VyQWR2ZXJ0aXNlPSIkKCAkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUubUROU1Jlc3BvbmRlciB8IC91c3IvYmluL2dyZXAgTm9NdWx0aWNhc3RBZHZlcnRpc2VtZW50cyApIgoJCWlmIFsgIiRib25qb3VyQWR2ZXJ0aXNlIiAhPSAiMSIgXSB8fCBbICIkYm91am91ckFkdmVydGlzZSIgPSAiIiBdOyB0aGVuCgkJCWVjaG8gIiogNC4xIERpc2FibGUgQm9uam91ciBhZHZlcnRpc2luZyBzZXJ2aWNlIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNC4xIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWVsc2UKCQkJZWNobyAiJChkYXRlIC11KSIgIjQuMSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU0XzEgLWJvb2wgZmFsc2UKCQlmaQoJZmkKZmkKCiMgNC4yIEVuYWJsZSAiU2hvdyBXaS1GaSBzdGF0dXMgaW4gbWVudSBiYXIiIAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDRfMj0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNF8yKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NF8yIiA9ICIxIiBdOyB0aGVuCgl3aWZpTWVudUJhcj0iJCgkRGVmYXVsdHMgLWN1cnJlbnRIb3N0IHJlYWQgY29tLmFwcGxlLmNvbnRyb2xjZW50ZXIucGxpc3QgV2lGaSkiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiR3aWZpTWVudUJhciIgLW5lIDE4IF07IHRoZW4KCQllY2hvICIqIDQuMiBFbmFibGUgU2hvdyBXaS1GaSBzdGF0dXMgaW4gbWVudSBiYXIiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjQuMiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiNC4yIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNF8yIC1ib29sIGZhbHNlCglmaQpmaQoKIyA0LjQgRW5zdXJlIGh0dHAgc2VydmVyIGlzIG5vdCBydW5uaW5nIAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDRfND0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNF80KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKIyBDb2RlIGZyYWdtZW50IGZyb20gaHR0cHM6Ly9naXRodWIuY29tL2tyaXNwYXluZS9DSVMtU2V0dGluZ3MvYmxvYi9tYXN0ZXIvRWxDYXBpdGFuX0NJUy5zaAppZiBbICIkQXVkaXQ0XzQiID0gIjEiIF07IHRoZW4KCWh0dHBkRGlzYWJsZWQ9IiQobGF1bmNoY3RsIHByaW50LWRpc2FibGVkIHN5c3RlbSB8IC91c3IvYmluL2dyZXAgLWMgJyJvcmcuYXBhY2hlLmh0dHBkIiA9PiB0cnVlJykiCglpZiBbICIkaHR0cGREaXNhYmxlZCIgPSAwIF07IHRoZW4KCQllY2hvICIqIDQuNCBFbnN1cmUgaHR0cCBzZXJ2ZXIgaXMgbm90IHJ1bm5pbmciID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjQuNCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiNC40IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNF80IC1ib29sIGZhbHNlCglmaQpmaQoKIyA0LjUgRW5zdXJlIG5mcyBzZXJ2ZXIgaXMgbm90IHJ1bm5pbmcKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ0XzU9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTRfNSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDRfNSIgPSAiMSIgXTsgdGhlbgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbIC1lIC9ldGMvZXhwb3J0cyAgXTsgdGhlbgoJCWVjaG8gIjQuNSBFbnN1cmUgbmZzIHNlcnZlciBpcyBub3QgcnVubmluZyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNC41IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJCWVjaG8gIiQoZGF0ZSAtdSkiICI0LjUgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU0XzUgLWJvb2wgZmFsc2UKCWZpCmZpCgojIDUuMS4xIFNlY3VyZSBIb21lIEZvbGRlcnMKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1XzFfMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xXzEpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzFfMSIgPSAiMSIgXTsgdGhlbgoJaG9tZUZvbGRlcnM9IiQoZmluZCAvVXNlcnMgLW1pbmRlcHRoIDEgLW1heGRlcHRoIDEgLXR5cGUgZCAtcGVybSAtMSB8IGdyZXAgLXYgIlNoYXJlZCIgfCBncmVwIC12ICJHdWVzdCIgfCB3YyAtbCB8IHhhcmdzKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGhvbWVGb2xkZXJzIiA9ICIwIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMS4xIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xXzEgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDUuMS4xIFNlY3VyZSBIb21lIEZvbGRlcnMiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMS4xIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgNS4xLjIgQ2hlY2sgU3lzdGVtIFdpZGUgQXBwbGljYXRpb25zIGZvciBhcHByb3ByaWF0ZSBwZXJtaXNzaW9ucwojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDVfMV8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzFfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMV8yIiA9ICIxIiBdOyB0aGVuCglhcHBQZXJtaXNzaW9ucz0iJChmaW5kIC9BcHBsaWNhdGlvbnMgLWluYW1lICIqXC5hcHAiIC10eXBlIGQgLXBlcm0gLTIgLWxzIHwgd2MgLWwgfCB4YXJncykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRhcHBQZXJtaXNzaW9ucyIgPSAiMCIgXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjEuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMV8yIC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiA1LjEuMiBDaGVjayBTeXN0ZW0gV2lkZSBBcHBsaWNhdGlvbnMgZm9yIGFwcHJvcHJpYXRlIHBlcm1pc3Npb25zIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjEuMiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDUuMS4zIENoZWNrIFN5c3RlbSBmb2xkZXIgZm9yIHdvcmxkIHdyaXRhYmxlIGZpbGVzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8xXzM9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMV8zKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NV8xXzMiID0gIjEiIF07IHRoZW4KCXN5c1Blcm1pc3Npb25zPSIkKGZpbmQgIC9TeXN0ZW0vVm9sdW1lcy9EYXRhL1N5c3RlbSAtdHlwZSBkIC1wZXJtIC0yIC1scyB8IGdyZXAgLXYgIlB1YmxpYy9Ecm9wIEJveCIgfCB3YyAtbCB8IHhhcmdzKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJHN5c1Blcm1pc3Npb25zIiA9ICIwIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMS4zIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xXzMgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDUuMS4zIENoZWNrIFN5c3RlbSBmb2xkZXIgZm9yIHdvcmxkIHdyaXRhYmxlIGZpbGVzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjEuMyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDUuMS40IENoZWNrIExpYnJhcnkgZm9sZGVyIGZvciB3b3JsZCB3cml0YWJsZSBmaWxlcwojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDVfMV80PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzFfNCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMV80IiA9ICIxIiBdOyB0aGVuCglsaWJQZXJtaXNzaW9ucz0iJChmaW5kIC9MaWJyYXJ5IC10eXBlIGQgLXBlcm0gLTIgLWxzIHwgZ3JlcCAtdiBDYWNoZXMgfCBncmVwIC12IEFkb2JlIHwgZ3JlcCAtdiBWTXdhcmUgfCBncmVwIC12ICIvQXVkaW8vRGF0YSIgfCB3YyAtbCB8IHhhcmdzKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGxpYlBlcm1pc3Npb25zIiA9ICIwIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMS40IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xXzQgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDUuMS40IENoZWNrIExpYnJhcnkgZm9sZGVyIGZvciB3b3JsZCB3cml0YWJsZSBmaWxlcyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xLjQgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyA1LjMgUmVkdWNlIHRoZSBzdWRvIHRpbWVvdXQgcGVyaW9kCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8zPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzMiID0gIjEiIF07IHRoZW4KICAgIHN1ZG9UaW1lb3V0PSIkKGNhdCAvcHJpdmF0ZS9ldGMvc3Vkb2Vycy5kL2RlZmF1bHRzX3RpbWVzdGFtcF90aW1lb3V0IHwgZ3JlcCAtYyAndGltZXN0YW1wX3RpbWVvdXQgPSAwJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRzdWRvVGltZW91dCIgPSAiIiBdOyB0aGVuCgkJZWNobyAiKiA1LjMgUmVkdWNlIHRoZSBzdWRvIHRpbWVvdXQgcGVyaW9kIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjMgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMyBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMyAtYm9vbCBmYWxzZQoJZmkKZmkKCgojIDUuNSBBdXRvbWF0aWNhbGx5IGxvY2sgdGhlIGxvZ2luIGtleWNoYWluIGZvciBpbmFjdGl2aXR5CiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV80PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzQpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzQiID0gIjEiIF07IHRoZW4KCWtleVRpbWVvdXQ9IiQoc2VjdXJpdHkgc2hvdy1rZXljaGFpbi1pbmZvIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L0tleWNoYWlucy9sb2dpbi5rZXljaGFpbiAyPiYxIHwgZ3JlcCAtYyAibm8tdGltZW91dCIpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbICIka2V5VGltZW91dCIgLWd0IDAgXTsgdGhlbgoJCWVjaG8gIiogNS40IEF1dG9tYXRpY2FsbHkgbG9jayB0aGUgbG9naW4ga2V5Y2hhaW4gZm9yIGluYWN0aXZpdHkiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjUuNCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiNS40IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV80IC1ib29sIGZhbHNlCglmaQpmaQoKIyA1LjUgVXNlIGEgc2VwYXJhdGUgdGltZXN0YW1wIGZvciBlYWNoIHVzZXIvdHR5IGNvbWJvCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV81PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzUpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzUiID0gIjEiIF07IHRoZW4KCXR0eVRpbWVzdGFtcD0iJChjYXQgL2V0Yy9zdWRvZXJzIHwgZWdyZXAgdHR5X3RpY2tldHMpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbICIkdHR5VGltZXN0YW1wIiAhPSAiIiBdOyB0aGVuCgkJZWNobyAiKiA1LjUgVXNlIGEgc2VwYXJhdGUgdGltZXN0YW1wIGZvciBlYWNoIHVzZXIvdHR5IGNvbWJvIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjUgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjUuNSBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfNSAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgNS42IEVuc3VyZSBsb2dpbiBrZXljaGFpbiBpcyBsb2NrZWQgd2hlbiB0aGUgY29tcHV0ZXIgc2xlZXBzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV82PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzYpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzYiID0gIjEiIF07IHRoZW4KCWxvY2tTbGVlcD0iJChzZWN1cml0eSBzaG93LWtleWNoYWluLWluZm8gL1VzZXJzLyIkY3VycmVudFVzZXIiL0xpYnJhcnkvS2V5Y2hhaW5zL2xvZ2luLmtleWNoYWluIDI+JjEgfCBncmVwIC1jICJsb2NrLW9uLXNsZWVwIikiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRsb2NrU2xlZXAiID0gMCBdOyB0aGVuCgkJZWNobyAiKiA1LjYgRW5zdXJlIGxvZ2luIGtleWNoYWluIGlzIGxvY2tlZCB3aGVuIHRoZSBjb21wdXRlciBzbGVlcHMiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjUuNiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiNS42IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV82IC1ib29sIGZhbHNlCglmaQpmaQoKIyA1LjcgRG8gbm90IGVuYWJsZSB0aGUgInJvb3QiIGFjY291bnQKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1Xzc9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfNykiCmlmIFsgIiRBdWRpdDVfNyIgPSAiMSIgXTsgdGhlbgoJI2VjaG8gIiQoZGF0ZSAtdSkiICJDaGVja2luZyA1LjciIHwgdGVlIC1hICIkbG9nRmlsZSIKCXJvb3RFbmFibGVkPSIkKGRzY2wgLiAtcmVhZCAvVXNlcnMvcm9vdCBBdXRoZW50aWNhdGlvbkF1dGhvcml0eSAyPiYxIHwgZ3JlcCAtYyAiTm8gc3VjaCBrZXkiKSIKCXJvb3RFbmFibGVkUmVtZWRpYXRlPSIkKGRzY2wgLiAtcmVhZCAvVXNlcnMvcm9vdCBVc2VyU2hlbGwgMj4mMSB8IGdyZXAgLWMgIi91c3IvYmluL2ZhbHNlIikiCglpZiBbICIkcm9vdEVuYWJsZWQiID0gIjEiIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNS43IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV83IC1ib29sIGZhbHNlOyBlbGlmCgkJWyAiJHJvb3RFbmFibGVkUmVtZWRpYXRlIiA9ICIxIiBdOyB0aGVuCgkJICAgZWNobyAiJChkYXRlIC11KSIgIjUuNyBwYXNzZWQgZHVlIHRvIHJlbWVkaWF0aW9uIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJICAgJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzcgLWJvb2wgZmFsc2UKCWVsc2UKCWVjaG8gIiogNS43IERvIE5vdCBlbmFibGUgdGhlICJyb290IiBhY2NvdW50IiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJZWNobyAiJChkYXRlIC11KSIgIjUuNyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCglmaQpmaQoKIyA1LjggRGlzYWJsZSBhdXRvbWF0aWMgbG9naW4KIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBMb2dpbldpbmRvdyBwYXlsb2FkID4gT3B0aW9ucyA+IERpc2FibGUgYXV0b21hdGljIGxvZ2luIChjaGVja2VkKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDVfOD0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV84KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NV84IiA9ICIxIiBdOyB0aGVuCglDUF9hdXRvbG9naW5FbmFibGVkPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnRGlzYWJsZUF1dG9Mb2dpbkNsaWVudCcpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX2F1dG9sb2dpbkVuYWJsZWQiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuOCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfOCAtYm9vbCBmYWxzZTsgZWxzZQoJCWF1dG9sb2dpbkVuYWJsZWQ9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmxvZ2lud2luZG93IHwgZ3JlcCAtb3cgImF1dG9Mb2dpblVzZXIiKSIKCQlpZiBbICIkYXV0b2xvZ2luRW5hYmxlZCIgPSAiIiBdOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjggcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV84IC1ib29sIGZhbHNlOyBlbHNlCgkJCWVjaG8gIiogNS44IERpc2FibGUgYXV0b21hdGljIGxvZ2luIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNS44IGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCWZpCglmaQpmaQoKIyA1LjkgUmVxdWlyZSBhIHBhc3N3b3JkIHRvIHdha2UgdGhlIGNvbXB1dGVyIGZyb20gc2xlZXAgb3Igc2NyZWVuIHNhdmVyCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gU2VjdXJpdHkgYW5kIFByaXZhY3kgcGF5bG9hZCA+IEdlbmVyYWwgPiBSZXF1aXJlIHBhc3N3b3JkICogYWZ0ZXIgc2xlZXAgb3Igc2NyZWVuIHNhdmVyIGJlZ2lucyAoY2hlY2tlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1Xzk9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfOSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CiMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQppZiBbICIkQXVkaXQ1XzkiID0gIjEiIF07IHRoZW4KCUNQX3NjcmVlbnNhdmVyUHdkPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnYXNrRm9yUGFzc3dvcmQgPSAxJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1Bfc2NyZWVuc2F2ZXJQd2QiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuOSBwYXNzZWQgY3AiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfOSAtYm9vbCBmYWxzZTsgZWxzZQoJCXNjcmVlbnNhdmVyUHdkPSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5zY3JlZW5zYXZlciBhc2tGb3JQYXNzd29yZCkiCgkJaWYgWyAiJHNjcmVlbnNhdmVyUHdkIiA9ICIxIiBdOyB0aGVuCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjkgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV85IC1ib29sIGZhbHNlOyBlbHNlCgkJCWVjaG8gIiogNS45IFJlcXVpcmUgYSBwYXNzd29yZCB0byB3YWtlIHRoZSBjb21wdXRlciBmcm9tIHNsZWVwIG9yIHNjcmVlbiBzYXZlciIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQkJZWNobyAiJChkYXRlIC11KSIgIjUuOSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZmkKZmkKCiMgNS4xMCBFbnN1cmUgc3lzdGVtIGlzIHNldCB0byBoaWJlcm5hdGUgYW5kIERlc3Ryb3kgRmlsZVZhdWx0IEtleQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDVfMTA9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMTApIgojIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKaWYgWyAiJEF1ZGl0NV8xMCIgPSAiMSIgXTsgdGhlbgoJbWFjVHlwZT0kKHN5c3RlbV9wcm9maWxlciBTUEhhcmR3YXJlRGF0YVR5cGUgfCBlZ3JlcCAtYyAiTW9kZWwgSWRlbnRpZmllcjogTWFjQm9vayIpCglpZiBbWyAiJG1hY1R5cGUiIC1nZSAwIF1dOyB0aGVuCgkJaGliZXJuYXRlVmFsdWU9JChwbXNldCAtZyB8IGVncmVwIHN0YW5kYnlkZWxheWxvdyB8IGF3ayAne3ByaW50ICQyfScpCgkJaWYgW1sgIiRoaWJlcm5hdGVWYWx1ZSIgPT0gIiIgXV0gfHwgW1sgIiRoaWJlcm5hdGVWYWx1ZSIgLWd0IDYwMCBdXTsgdGhlbgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xMCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzEwIC1ib29sIGZhbHNlCgkJZWxzZQoJCQllY2hvICIqIDUuMTAgRW5zdXJlIHN5c3RlbSBpcyBzZXQgdG8gaGliZXJuYXRlIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xMCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZWxzZQoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjEwIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xMCAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgNS4xMSBSZXF1aXJlIGFuIGFkbWluaXN0cmF0b3IgcGFzc3dvcmQgdG8gYWNjZXNzIHN5c3RlbS13aWRlIHByZWZlcmVuY2VzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8xMT0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xMSkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMTEiID0gIjEiIF07IHRoZW4KCWFkbWluU3lzUHJlZnM9IiQoc2VjdXJpdHkgYXV0aG9yaXphdGlvbmRiIHJlYWQgc3lzdGVtLnByZWZlcmVuY2VzIDI+IC9kZXYvbnVsbCB8IGdyZXAgLUExIHNoYXJlZCB8IGdyZXAgLUUgJyh0cnVlfGZhbHNlKScgfCBncmVwIC1jICJ0cnVlIikiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRhZG1pblN5c1ByZWZzIiA9ICIxIiBdOyB0aGVuCgkJZWNobyAiKiA1LjExIFJlcXVpcmUgYW4gYWRtaW5pc3RyYXRvciBwYXNzd29yZCB0byBhY2Nlc3Mgc3lzdGVtLXdpZGUgcHJlZmVyZW5jZXMiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMTEgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMTEgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzExIC1ib29sIGZhbHNlCglmaQpmaQoKIyA1LjEyIERpc2FibGUgYWJpbGl0eSB0byBsb2dpbiB0byBhbm90aGVyIHVzZXIncyBhY3RpdmUgYW5kIGxvY2tlZCBzZXNzaW9uCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8xMj0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMTIiID0gIjEiIF07IHRoZW4KCXNjcmVlbnNhdmVyUnVsZXM9IiQoL3Vzci9iaW4vc2VjdXJpdHkgYXV0aG9yaXphdGlvbmRiIHJlYWQgc3lzdGVtLmxvZ2luLnNjcmVlbnNhdmVyIDI+JjEgfCBncmVwIC1jICd1c2UtbG9naW4td2luZG93LXVpJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFsgIiRzY3JlZW5zYXZlclJ1bGVzIiA9ICIxIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMTIgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzEyIC1ib29sIGZhbHNlCiAgICAgZWxzZQoJCWVjaG8gIiogNS4xMiBEaXNhYmxlIGFiaWxpdHkgdG8gbG9naW4gdG8gYW5vdGhlciB1c2VycyBhY3RpdmUgYW5kIGxvY2tlZCBzZXNzaW9uIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjEyIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgNS4xMyBDcmVhdGUgYSBjdXN0b20gbWVzc2FnZSBmb3IgdGhlIExvZ2luIFNjcmVlbgojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIExvZ2luV2luZG93IHBheWxvYWQgPiBXaW5kb3cgPiBCYW5uZXIgKG1lc3NhZ2UpCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8xMz0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xMykiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMTMiID0gIjEiIF07IHRoZW4KCUNQX2xvZ2luTWVzc2FnZT0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ0xvZ2lud2luZG93VGV4dCcpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX2xvZ2luTWVzc2FnZSIgLWd0ICIwIiBdXSA7IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xMyBwYXNzZWQgY3AiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMTMgLWJvb2wgZmFsc2U7IGVsc2UKCQlsb2dpbk1lc3NhZ2U9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmxvZ2lud2luZG93LnBsaXN0IExvZ2lud2luZG93VGV4dCkiCgkJaWYgW1sgJGxvZ2luTWVzc2FnZSA9ICIiIF1dIHx8IFtbICRsb2dpbk1lc3NhZ2UgPSAqImRvZXMgbm90IGV4aXN0IiogXV07IHRoZW4KCQkJZWNobyAiKiA1LjEzIENyZWF0ZSBhIGN1c3RvbSBtZXNzYWdlIGZvciB0aGUgTG9naW4gU2NyZWVuIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xMyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQkJZWNobyAiJChkYXRlIC11KSIgIjUuMTMgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xMyAtYm9vbCBmYWxzZQoJCWZpCglmaQpmaQoKIyA1LjE0IENyZWF0ZSBhIExvZ2luIHdpbmRvdyBiYW5uZXIKIyBQb2xpY3kgQmFubmVyIGh0dHBzOi8vc3VwcG9ydC5hcHBsZS5jb20vZW4tdXMvSFQyMDIyNzcKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1XzE0PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzE0KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NV8xNCIgPSAiMSIgXTsgdGhlbgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbIC1lIC9MaWJyYXJ5L1NlY3VyaXR5L1BvbGljeUJhbm5lci50eHQgXSB8fCBbIC1lIC9MaWJyYXJ5L1NlY3VyaXR5L1BvbGljeUJhbm5lci5ydGYgXSB8fCBbIC1lIC9MaWJyYXJ5L1NlY3VyaXR5L1BvbGljeUJhbm5lci5ydGZkIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xNCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMTQgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDUuMTQgQ3JlYXRlIGEgTG9naW4gd2luZG93IGJhbm5lciIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xNCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDUuMTYgRGlzYWJsZSBGYXN0IFVzZXIgU3dpdGNoaW5nIChOb3QgU2NvcmVkKQojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIExvZ2luV2luZG93IHBheWxvYWQgPiBPcHRpb25zID4gRW5hYmxlIEZhc3QgVXNlciBTd2l0Y2hpbmcgKHVuY2hlY2tlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1XzE2PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzE2KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NV8xNiIgPSAiMSIgXTsgdGhlbgoJQ1BfRmFzdFVzZXJTd2l0Y2hpbmc9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICdNdWx0aXBsZVNlc3Npb25FbmFibGVkID0gMCcpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX0Zhc3RVc2VyU3dpdGNoaW5nIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjE2IHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xNiAtYm9vbCBmYWxzZTsgZWxzZQoJCUZhc3RVc2VyU3dpdGNoaW5nPSIkKCREZWZhdWx0cyByZWFkIC9MaWJyYXJ5L1ByZWZlcmVuY2VzLy5HbG9iYWxQcmVmZXJlbmNlcyBNdWx0aXBsZVNlc3Npb25FbmFibGVkKSIKCQlpZiBbICIkRmFzdFVzZXJTd2l0Y2hpbmciID0gIjAiIF07IHRoZW4KCQkJZWNobyAiJChkYXRlIC11KSIgIjUuMTYgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xNiAtYm9vbCBmYWxzZTsgZWxzZQoJCQllY2hvICIqIDUuMTYgRGlzYWJsZSBGYXN0IFVzZXIgU3dpdGNoaW5nIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xNiBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQlmaQoJZmkKZmkKCiMgNS4xOCBTeXN0ZW0gSW50ZWdyaXR5IFByb3RlY3Rpb24gc3RhdHVzCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0NV8xOD0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xOCkiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDVfMTgiID0gIjEiIF07IHRoZW4KCXNpcEVuYWJsZWQ9IiQoL3Vzci9iaW4vY3NydXRpbCBzdGF0dXMgfCBhd2sgJ3twcmludCAkNX0nKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJHNpcEVuYWJsZWQiID0gImVuYWJsZWQuIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMTggcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzE4IC1ib29sIGZhbHNlOyBlbHNlCgkJZWNobyAiKiA1LjE4IFN5c3RlbSBJbnRlZ3JpdHkgUHJvdGVjdGlvbiBzdGF0dXMgLSBub3QgZW5hYmxlZCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xOCBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDUuMTkgRW5hYmxlIFNlYWxlZCBTeXN0ZW0gVm9sdW1lIChTU1YpIAojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDVfMTk9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMTkpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ1XzE5IiA9ICIxIiBdOyB0aGVuCglzc3ZFbmFibGVkPSIkKC91c3IvYmluL2NzcnV0aWwgYXV0aGVudGljYXRlZC1yb290IHN0YXR1cyB8IGF3ayAne3ByaW50ICQ0fScpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbICIkc3N2RW5hYmxlZCIgPSAiZW5hYmxlZCIgXTsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI1LjE5IHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNV8xOSAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogNS4xOSBFbmFibGUgU2VhbGVkIFN5c3RlbSBWb2x1bWUgKFNTVikgLSBub3QgZW5hYmxlZCIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNS4xOSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSIKCWZpCmZpCgojIDUuMjAgRW5hYmxlIExpYnJhcnkgVmFsaWRhdGlvbiAKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ1XzE5PSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU1XzIwKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0NV8yMCIgPSAiMSIgXTsgdGhlbgoJbGliVmFsaWRhdGlvbkRpc2FibGVkPSIkKCREZWZhdWx0cyByZWFkIC9MaWJyYXJ5L1ByZWZlcmVuY2VzL2NvbS5hcHBsZS5zZWN1cml0eS5saWJyYXJheXZhbGlkYXRpb24ucGxpc3QgRGlzYWJsZUxpYnJhcnlWYWxpZGF0aW9uKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGxpYlZhbGlkYXRpb25EaXNhYmxlZCIgPSAwIF07IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNS4yMCBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTVfMjAgLWJvb2wgZmFsc2U7IGVsc2UKCQllY2hvICIqIDUuMjAgTGlicmFyeSBWYWxpZGF0aW9uIC0gbm90IGVuYWJsZWQiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJZWNobyAiJChkYXRlIC11KSIgIjUuMjAgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCglmaQpmaQoKIyA2LjEuMSBEaXNwbGF5IGxvZ2luIHdpbmRvdyBhcyBuYW1lIGFuZCBwYXNzd29yZAojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIExvZ2luV2luZG93IHBheWxvYWQgPiBXaW5kb3cgPiBMT0dJTiBQUk9NUFQgPiBOYW1lIGFuZCBwYXNzd29yZCB0ZXh0IGZpZWxkcyAoc2VsZWN0ZWQpCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Nl8xXzE9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMV8xKSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Nl8xXzEiID0gIjEiIF07IHRoZW4KCUNQX2xvZ2lud2luZG93RnVsbE5hbWU9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICdTSE9XRlVMTE5BTUUgPSAxJykiCgkjIElmIGNsaWVudCBmYWlscywgdGhlbiBub3RlIGNhdGVnb3J5IGluIGF1ZGl0IGZpbGUKCWlmIFtbICIkQ1BfbG9naW53aW5kb3dGdWxsTmFtZSIgLWd0ICIwIiBdXSA7IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjEgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzFfMSAtYm9vbCBmYWxzZTsgZWxzZQoJCWxvZ2lud2luZG93RnVsbE5hbWU9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmxvZ2lud2luZG93IFNIT1dGVUxMTkFNRSkiCgkJaWYgWyAiJGxvZ2lud2luZG93RnVsbE5hbWUiICE9ICIxIiBdOyB0aGVuCgkJCWVjaG8gIiogNi4xLjEgRGlzcGxheSBsb2dpbiB3aW5kb3cgYXMgbmFtZSBhbmQgcGFzc3dvcmQiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjEuMSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQkJZWNobyAiJChkYXRlIC11KSIgIjYuMS4xIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMV8xIC1ib29sIGZhbHNlCgkJZmkKCWZpCmZpCgojIDYuMS4yIERpc2FibGUgIlNob3cgcGFzc3dvcmQgaGludHMiCiMgQ29uZmlndXJhdGlvbiBQcm9maWxlIC0gTG9naW5XaW5kb3cgcGF5bG9hZCA+IE9wdGlvbnMgPiBTaG93IHBhc3N3b3JkIGhpbnQgd2hlbiBuZWVkZWQgYW5kIGF2YWlsYWJsZSAodW5jaGVja2VkIC0gWWVzIHRoaXMgaXMgYmFja3dhcmRzKQojIFZlcmlmeSBvcmdhbml6YXRpb25hbCBzY29yZQpBdWRpdDZfMV8yPSIkKCREZWZhdWx0cyByZWFkICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzFfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDZfMV8yIiA9ICIxIiBdOyB0aGVuCglDUF9wYXNzd29yZEhpbnRzPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnUmV0cmllc1VudGlsSGludCA9IDAnKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9wYXNzd29yZEhpbnRzIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjEuMiBwYXNzZWQgY3AiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMV8yIC1ib29sIGZhbHNlOyBlbHNlCgkJcGFzc3dvcmRIaW50cz0iJCgkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUubG9naW53aW5kb3cgUmV0cmllc1VudGlsSGludCkiCgkJaWYgWyAiJHBhc3N3b3JkSGludHMiIC1ndCAwIF0gfHwgWyAiJHBhc3N3b3JkSGludHMiID0gKmV4aXN0KiBdOyB0aGVuCgkJCWVjaG8gIiogNi4xLjIgRGlzYWJsZSBTaG93IHBhc3N3b3JkIGhpbnRzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjIgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiOyBlbHNlCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjEuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzFfMiAtYm9vbCBmYWxzZQoJCWZpCglmaQpmaQoKIyA2LjEuMyBEaXNhYmxlIGd1ZXN0IGFjY291bnQKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBMb2dpbldpbmRvdyBwYXlsb2FkID4gT3B0aW9ucyA+IEFsbG93IEd1ZXN0IFVzZXIgKHVuY2hlY2tlZCkKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ2XzFfMz0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNl8xXzMpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ2XzFfMyIgPSAiMSIgXTsgdGhlbgoJQ1BfZ3Vlc3RFbmFibGVkPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnRGlzYWJsZUd1ZXN0QWNjb3VudCA9IDEnKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9ndWVzdEVuYWJsZWQiIC1ndCAiMCIgXV0gOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjYuMS4zIHBhc3NlZCBjcCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNl8xXzMgLWJvb2wgZmFsc2U7IGVsc2UKCQlndWVzdEVuYWJsZWQ9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLmxvZ2lud2luZG93LnBsaXN0IEd1ZXN0RW5hYmxlZCkiCgkJaWYgWyAiJGd1ZXN0RW5hYmxlZCIgPSAxIF07IHRoZW4KCQkJZWNobyAiKiA2LjEuMyBEaXNhYmxlIGd1ZXN0IGFjY291bnQiID4+ICIkYXVkaXRmaWxlbG9jYXRpb24iCgkJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjEuMyBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQkJZWNobyAiJChkYXRlIC11KSIgIjYuMS4zIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMV8zIC1ib29sIGZhbHNlCgkJZmkKCWZpCmZpCgojIDYuMS40IERpc2FibGUgIkFsbG93IGd1ZXN0cyB0byBjb25uZWN0IHRvIHNoYXJlZCBmb2xkZXJzIgojIENvbmZpZ3VyYXRpb24gUHJvZmlsZSAtIDYuMS40IERpc2FibGUgQWxsb3cgZ3Vlc3RzIHRvIGNvbm5lY3QgdG8gc2hhcmVkIGZvbGRlcnMgLSBDdXN0b20gcGF5bG9hZCA+IGNvbS5hcHBsZS5BcHBsZUZpbGVTZXJ2ZXIgZ3Vlc3RBY2Nlc3M9ZmFsc2UsIGNvbS5hcHBsZS5zbWIuc2VydmVyIEFsbG93R3Vlc3RBY2Nlc3M9ZmFsc2UKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ2XzFfND0iJCgkRGVmYXVsdHMgcmVhZCAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNl8xXzQpIgojIElmIG9yZ2FuaXphdGlvbmFsIHNjb3JlIGlzIDEgb3IgdHJ1ZSwgY2hlY2sgc3RhdHVzIG9mIGNsaWVudAppZiBbICIkQXVkaXQ2XzFfNCIgPSAiMSIgXTsgdGhlbgoJQ1BfYWZwR3Vlc3RFbmFibGVkPSIkKC91c3Ivc2Jpbi9zeXN0ZW1fcHJvZmlsZXIgU1BDb25maWd1cmF0aW9uUHJvZmlsZURhdGFUeXBlIHwgL3Vzci9iaW4vZ3JlcCAtYyAnZ3Vlc3RBY2Nlc3MgPSAwJykiCglDUF9zbWJHdWVzdEVuYWJsZWQ9IiQoL3Vzci9zYmluL3N5c3RlbV9wcm9maWxlciBTUENvbmZpZ3VyYXRpb25Qcm9maWxlRGF0YVR5cGUgfCAvdXNyL2Jpbi9ncmVwIC1jICdBbGxvd0d1ZXN0QWNjZXNzID0gMCcpIgoJIyBJZiBjbGllbnQgZmFpbHMsIHRoZW4gbm90ZSBjYXRlZ29yeSBpbiBhdWRpdCBmaWxlCglpZiBbWyAiJENQX2FmcEd1ZXN0RW5hYmxlZCIgLWd0ICIwIiBdXSB8fCBbWyAiJENQX3NtYkd1ZXN0RW5hYmxlZCIgLWd0ICIwIiBdXSA7IHRoZW4KCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjQgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzFfNCAtYm9vbCBmYWxzZTsgZWxzZQoJCWFmcEd1ZXN0RW5hYmxlZD0iJCgkRGVmYXVsdHMgcmVhZCAvTGlicmFyeS9QcmVmZXJlbmNlcy9jb20uYXBwbGUuQXBwbGVGaWxlU2VydmVyIGd1ZXN0QWNjZXNzKSIKCQlzbWJHdWVzdEVuYWJsZWQ9IiQoJERlZmF1bHRzIHJlYWQgL0xpYnJhcnkvUHJlZmVyZW5jZXMvU3lzdGVtQ29uZmlndXJhdGlvbi9jb20uYXBwbGUuc21iLnNlcnZlciBBbGxvd0d1ZXN0QWNjZXNzKSIKCQlpZiBbICIkYWZwR3Vlc3RFbmFibGVkIiA9ICIxIiBdIHx8IFsgIiRzbWJHdWVzdEVuYWJsZWQiID0gIjEiIF07IHRoZW4KCQkJZWNobyAiKiA2LjEuNCBEaXNhYmxlIEFsbG93IGd1ZXN0cyB0byBjb25uZWN0IHRvIHNoYXJlZCBmb2xkZXJzIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjQgZml4IiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJZWxzZQoJCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjQgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJCSREZWZhdWx0cyB3cml0ZSAiJHBsaXN0bG9jYXRpb24iIE9yZ1Njb3JlNl8xXzQgLWJvb2wgZmFsc2UKCQlmaQoJZmkKZmkKCiMgNi4xLjUgUmVtb3ZlIEd1ZXN0IGhvbWUgZm9sZGVyCiMgVmVyaWZ5IG9yZ2FuaXphdGlvbmFsIHNjb3JlCkF1ZGl0Nl8xXzU9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMV81KSIKIyBJZiBvcmdhbml6YXRpb25hbCBzY29yZSBpcyAxIG9yIHRydWUsIGNoZWNrIHN0YXR1cyBvZiBjbGllbnQKaWYgWyAiJEF1ZGl0Nl8xXzUiID0gIjEiIF07IHRoZW4KCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAtZSAvVXNlcnMvR3Vlc3QgXTsgdGhlbgoJCWVjaG8gIiogNi4xLjUgUmVtb3ZlIEd1ZXN0IGhvbWUgZm9sZGVyIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjEuNSBmaXgiIHwgdGVlIC1hICIkbG9nRmlsZSI7IGVsc2UKCQllY2hvICIkKGRhdGUgLXUpIiAiNi4xLjUgcGFzc2VkIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzFfNSAtYm9vbCBmYWxzZQoJZmkKZmkKCiMgNi4yIFR1cm4gb24gZmlsZW5hbWUgZXh0ZW5zaW9ucwojIERvZXMgbm90IHdvcmsgYXMgYSBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSAuR2xvYmFsUHJlZmVyZW5jZXMucGxpc3QKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ2XzI9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMikiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDZfMiIgPSAiMSIgXTsgdGhlbgoJCWZpbGVuYW1lRXh0PSIkKCREZWZhdWx0cyByZWFkIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L1ByZWZlcmVuY2VzLy5HbG9iYWxQcmVmZXJlbmNlcy5wbGlzdCBBcHBsZVNob3dBbGxFeHRlbnNpb25zKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgWyAiJGZpbGVuYW1lRXh0IiA9ICIxIiBdOyB0aGVuCgkJZWNobyAiJChkYXRlIC11KSIgIjYuMiBwYXNzZWQiIHwgdGVlIC1hICIkbG9nRmlsZSIKCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMiAtYm9vbCBmYWxzZTsgZWxzZQoJCWVjaG8gIiogNi4yIFR1cm4gb24gZmlsZW5hbWUgZXh0ZW5zaW9ucyIgPj4gIiRhdWRpdGZpbGVsb2NhdGlvbiIKCQllY2hvICIkKGRhdGUgLXUpIiAiNi4yIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJZmkKZmkKCiMgNi4zIERpc2FibGUgdGhlIGF1dG9tYXRpYyBydW4gb2Ygc2FmZSBmaWxlcyBpbiBTYWZhcmkKIyBDb25maWd1cmF0aW9uIFByb2ZpbGUgLSBDdXN0b20gcGF5bG9hZCA+IGNvbS5hcHBsZS5TYWZhcmkgPiBBdXRvT3BlblNhZmVEb3dubG9hZHM9ZmFsc2UKIyBWZXJpZnkgb3JnYW5pemF0aW9uYWwgc2NvcmUKQXVkaXQ2XzM9IiQoJERlZmF1bHRzIHJlYWQgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMykiCiMgSWYgb3JnYW5pemF0aW9uYWwgc2NvcmUgaXMgMSBvciB0cnVlLCBjaGVjayBzdGF0dXMgb2YgY2xpZW50CmlmIFsgIiRBdWRpdDZfMyIgPSAiMSIgXTsgdGhlbgoJQ1Bfc2FmYXJpU2FmZT0iJCgvdXNyL3NiaW4vc3lzdGVtX3Byb2ZpbGVyIFNQQ29uZmlndXJhdGlvblByb2ZpbGVEYXRhVHlwZSB8IC91c3IvYmluL2dyZXAgLWMgJ0F1dG9PcGVuU2FmZURvd25sb2FkcyA9IDAnKSIKCSMgSWYgY2xpZW50IGZhaWxzLCB0aGVuIG5vdGUgY2F0ZWdvcnkgaW4gYXVkaXQgZmlsZQoJaWYgW1sgIiRDUF9zYWZhcmlTYWZlIiAtZ3QgIjAiIF1dIDsgdGhlbgoJCWVjaG8gIiQoZGF0ZSAtdSkiICI2LjMgcGFzc2VkIGNwIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCgkJJERlZmF1bHRzIHdyaXRlICIkcGxpc3Rsb2NhdGlvbiIgT3JnU2NvcmU2XzMgLWJvb2wgZmFsc2U7IGVsc2UKCQlzYWZhcmlTYWZlPSIkKC91c3IvbGliZXhlYy9QbGlzdEJ1ZGR5IC1jICJQcmludDpBdXRvT3BlblNhZmVEb3dubG9hZHMiIC9Vc2Vycy8iJGN1cnJlbnRVc2VyIi9MaWJyYXJ5L0NvbnRhaW5lcnMvY29tLmFwcGxlLlNhZmFyaS9EYXRhL0xpYnJhcnkvUHJlZmVyZW5jZXMvY29tLmFwcGxlLlNhZmFyaS5wbGlzdCkiCgkJaWYgW1sgIiRzYWZhcmlTYWZlIiA9ICJ0cnVlIiBdXTsgdGhlbgoJCQllY2hvICIqIDYuMyBEaXNhYmxlIHRoZSBhdXRvbWF0aWMgcnVuIG9mIHNhZmUgZmlsZXMgaW4gU2FmYXJpIiA+PiAiJGF1ZGl0ZmlsZWxvY2F0aW9uIgoJCQllY2hvICIkKGRhdGUgLXUpIiAiNi4zIGZpeCIgfCB0ZWUgLWEgIiRsb2dGaWxlIjsgZWxzZQoJCQllY2hvICIkKGRhdGUgLXUpIiAiNi4zIHBhc3NlZCIgfCB0ZWUgLWEgIiRsb2dGaWxlIgoJCQkkRGVmYXVsdHMgd3JpdGUgIiRwbGlzdGxvY2F0aW9uIiBPcmdTY29yZTZfMyAtYm9vbCBmYWxzZQoJCWZpCglmaQpmaQoKZWNobyAiJChkYXRlIC11KSIgIkF1ZGl0IGNvbXBsZXRlIiB8IHRlZSAtYSAiJGxvZ0ZpbGUiCmV4aXQgMA==</script_contents_encoded>
+</script>
